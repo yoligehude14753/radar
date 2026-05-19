@@ -8,6 +8,7 @@ import {
   DatabaseOutlined,
   KeyOutlined,
   AlertOutlined,
+  SettingOutlined,
 } from '@ant-design/icons'
 import { useQuery } from '@tanstack/react-query'
 import { useState, type FC, Component, type ReactNode } from 'react'
@@ -19,6 +20,7 @@ import ReportsCommunities from './pages/ReportsCommunities'
 import Sources from './pages/Sources'
 import Tokens from './pages/Tokens'
 import Incidents from './pages/Incidents'
+import Settings from './pages/Settings'
 
 const { Sider, Content } = Layout
 const qc = new QueryClient({ defaultOptions: { queries: { staleTime: 30_000, retry: 1 } } })
@@ -97,6 +99,7 @@ const AppLayout: FC = () => {
     { key: '/reports/communities', icon: <GlobalOutlined />, label: <NavLink to="/reports/communities">社群地图</NavLink> },
     { key: '/sources', icon: <DatabaseOutlined />, label: <NavLink to="/sources">数据源</NavLink> },
     { key: '/tokens', icon: <KeyOutlined />, label: <NavLink to="/tokens">凭证管理</NavLink> },
+    { key: '/settings', icon: <SettingOutlined />, label: <NavLink to="/settings">系统设置</NavLink> },
     {
       key: '/incidents',
       icon: <AlertOutlined />,
@@ -157,6 +160,7 @@ const AppLayout: FC = () => {
             <Route path="/reports/communities" element={<ReportsCommunities />} />
             <Route path="/sources" element={<Sources />} />
             <Route path="/tokens" element={<Tokens />} />
+            <Route path="/settings" element={<Settings />} />
             <Route path="/incidents" element={<Incidents />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

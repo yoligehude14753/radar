@@ -130,6 +130,46 @@ export const testRedditToken = (creds: {
     body: JSON.stringify(creds),
   })
 
+// ── 系统设置 ──────────────────────────────────────────────────────────────────
+
+export interface SourceConfig { enabled: boolean; interval: string; description: string }
+export interface LLMProfileConfig { profile: string; model: string; base_url: string; api_key_masked: string }
+export interface SettingsOverview {
+  github: SourceConfig
+  reddit: SourceConfig
+  active_profile: string
+  yunwu: LLMProfileConfig
+  heyi: LLMProfileConfig
+  ollama: LLMProfileConfig
+  openai: LLMProfileConfig
+  max_items_per_run: number
+  report_projects_cron: string
+  report_communities_cron: string
+}
+
+export const getSettingsOverview = () => request<SettingsOverview>('/settings/overview')
+
+export const updateSourceSettings = (body: {
+  github_enabled: boolean
+  github_interval: string
+  reddit_enabled: boolean
+  reddit_interval: string
+}) => request<{ ok: boolean; message: string }>('/settings/sources', { method: 'POST', body: JSON.stringify(body) })
+
+export const updateLLMSettings = (body: {
+  profile: string
+  model?: string
+  base_url?: string
+  api_key?: string
+}) => request<{ ok: boolean; message: string }>('/settings/llm', { method: 'POST', body: JSON.stringify(body) })
+
+export const testLLMSettings = (body: {
+  profile: string
+  model?: string
+  base_url?: string
+  api_key?: string
+}) => request<{ ok: boolean; message: string; model_used: string }>('/settings/llm/test', { method: 'POST', body: JSON.stringify(body) })
+
 export const saveRedditToken = (creds: {
   client_id: string
   client_secret: string

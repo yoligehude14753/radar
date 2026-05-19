@@ -1,7 +1,7 @@
 """API 路由聚合"""
 from fastapi import APIRouter
 
-from radar.web.api import incidents, reports, sources, system, tokens
+from radar.web.api import incidents, reports, sources, system, tokens, settings_api
 from radar.config import settings
 from pydantic import BaseModel
 
@@ -19,6 +19,7 @@ router.include_router(sources.router, prefix="/sources", tags=["数据源"])
 router.include_router(reports.router, prefix="/reports", tags=["报告"])
 router.include_router(incidents.router, prefix="/incidents", tags=["事件"])
 router.include_router(tokens.router, prefix="/tokens", tags=["凭证管理"])
+router.include_router(settings_api.router, prefix="/settings", tags=["系统设置"])
 
 
 @router.get("/health", response_model=HealthResp, tags=["系统"], summary="健康检查（简短路径）")
