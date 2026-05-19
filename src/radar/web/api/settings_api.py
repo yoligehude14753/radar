@@ -17,6 +17,14 @@ router = APIRouter()
 VALID_INTERVALS = ["15min", "30min", "1h", "3h", "6h", "12h", "daily", "weekly"]
 VALID_PROFILES = ["yunwu", "heyi", "ollama", "openai"]
 
+# 报告频率 → (cron 表达式, 数据窗口天数)
+REPORT_FREQ_MAP: dict[str, tuple[str, int]] = {
+    "daily":   ("0 6 * * *",   1),   # 每天 06:00，取最近 1 天数据
+    "weekly":  ("0 6 * * 1",   7),   # 每周一 06:00，取最近 7 天数据
+    "monthly": ("0 6 1 * *",  30),   # 每月 1 日 06:00，取最近 30 天数据
+    "manual":  ("0 6 1 1 *",   0),   # 不自动执行（改为极小概率触发），手动触发全量
+}
+
 
 # ── 响应模型 ──────────────────────────────────────────────────────────────────
 
@@ -49,8 +57,13 @@ class SettingsOverview(BaseModel):
     openai: LLMProfileConfig
     # 限制
     max_items_per_run: int
+    # 报告调度
     report_projects_cron: str
     report_communities_cron: str
+    report_projects_frequency: str   # daily/weekly/monthly/manual（从 cron 反推）
+    report_communities_frequency: str
+    report_projects_days_back: int   # 对应的数据窗口天数
+    report_communities_days_back: int
 
 
 class UpdateSourcesRequest(BaseModel):
@@ -58,6 +71,13 @@ class UpdateSourcesRequest(BaseModel):
     github_interval: str = "6h"
     reddit_enabled: bool = True
     reddit_interval: str = "1h"
+
+
+class UpdateReportRequest(BaseModel):
+    projects_frequency: Literal["daily", "weekly", "monthly", "manual"] = "daily"
+    projects_hour: int = 6      # 几点触发（0-23）
+    communities_frequency: Literal["daily", "weekly", "monthly", "manual"] = "daily"
+    communities_hour: int = 6
 
 
 class UpdateLLMRequest(BaseModel):
@@ -141,7 +161,25 @@ async def get_settings_overview() -> SettingsOverview:
         max_items_per_run=settings.max_items_per_run,
         report_projects_cron=settings.report_projects_cron,
         report_communities_cron=settings.report_communities_cron,
+        report_projects_frequency=_cron_to_freq(settings.report_projects_cron),
+        report_communities_frequency=_cron_to_freq(settings.report_communities_cron),
+        report_projects_days_back=REPORT_FREQ_MAP.get(_cron_to_freq(settings.report_projects_cron), ("", 0))[1],
+        report_communities_days_back=REPORT_FREQ_MAP.get(_cron_to_freq(settings.report_communities_cron), ("", 0))[1],
     )
+
+
+def _cron_to_freq(cron: str) -> str:
+    """从 cron 表达式反推频率标签"""
+    reverse = {v[0]: k for k, v in REPORT_FREQ_MAP.items()}
+    # 忽略小时部分差异，只匹配模式
+    normalized = cron.strip()
+    if normalized == "0 6 * * *" or normalized.startswith("0 ") and normalized.endswith("* * *"):
+        return "daily"
+    if normalized.endswith("* * 1") or "* * 1" in normalized:
+        return "weekly"
+    if "1 * *" in normalized and normalized.count("*") >= 2:
+        return "monthly"
+    return reverse.get(normalized, "daily")
 
 
 # ── 更新数据源配置 ─────────────────────────────────────────────────────────────
@@ -164,6 +202,78 @@ async def update_sources(req: UpdateSourcesRequest) -> dict:
                 req.github_enabled, req.github_interval,
                 req.reddit_enabled, req.reddit_interval)
     return {"ok": True, "message": "数据源配置已保存到 .env，重启服务后生效"}
+
+
+# ── 报告配置 ──────────────────────────────────────────────────────────────────
+
+
+@router.get("/report", summary="获取当前报告调度配置")
+async def get_report_config() -> dict:
+    return {
+        "projects_frequency": _cron_to_freq(settings.report_projects_cron),
+        "projects_cron": settings.report_projects_cron,
+        "projects_days_back": REPORT_FREQ_MAP.get(_cron_to_freq(settings.report_projects_cron), ("", 0))[1],
+        "communities_frequency": _cron_to_freq(settings.report_communities_cron),
+        "communities_cron": settings.report_communities_cron,
+        "communities_days_back": REPORT_FREQ_MAP.get(_cron_to_freq(settings.report_communities_cron), ("", 0))[1],
+    }
+
+
+@router.post("/report", summary="更新报告调度配置（写入 .env + 热更新调度器）")
+async def update_report_config(req: UpdateReportRequest) -> dict:
+    if req.projects_frequency not in REPORT_FREQ_MAP:
+        return {"ok": False, "message": f"无效频率: {req.projects_frequency}"}
+
+    def _make_cron(freq: str, hour: int) -> str:
+        base, _ = REPORT_FREQ_MAP[freq]
+        # 替换小时部分
+        parts = base.split()
+        parts[1] = str(max(0, min(23, hour)))
+        return " ".join(parts)
+
+    proj_cron = _make_cron(req.projects_frequency, req.projects_hour)
+    comm_cron = _make_cron(req.communities_frequency, req.communities_hour)
+
+    _patch_env({
+        "REPORT_PROJECTS_CRON": proj_cron,
+        "REPORT_COMMUNITIES_CRON": comm_cron,
+    })
+
+    # 热更新调度器（无需重启服务）
+    try:
+        from radar.runtime.scheduler import reschedule_reports
+        await reschedule_reports(proj_cron, comm_cron)
+        hot_update = True
+    except Exception as exc:
+        logger.warning("调度器热更新失败，重启后生效: %s", exc)
+        hot_update = False
+
+    msg = "报告调度已更新" + ("（已热更新，无需重启）" if hot_update else "（写入 .env，重启后生效）")
+    return {"ok": True, "message": msg, "projects_cron": proj_cron, "communities_cron": comm_cron}
+
+
+@router.post("/report/trigger/{template}", summary="立即生成一次报告")
+async def trigger_report_now(template: str) -> dict:
+    """手动立即触发一次报告生成（使用当前频率对应的数据窗口）"""
+    if template not in ("projects", "communities"):
+        return {"ok": False, "message": "template 只能是 projects 或 communities"}
+
+    freq = _cron_to_freq(
+        settings.report_projects_cron if template == "projects" else settings.report_communities_cron
+    )
+    days_back = REPORT_FREQ_MAP.get(freq, ("", 0))[1]
+
+    try:
+        if template == "projects":
+            from radar.outputs.projects import render_projects_report
+            result = await render_projects_report(days_back=days_back)
+        else:
+            from radar.outputs.communities import render_communities_report
+            result = await render_communities_report(days_back=days_back)
+        return {"ok": True, "message": f"报告已生成", **result}
+    except Exception as exc:
+        logger.exception("手动触发报告失败")
+        return {"ok": False, "message": str(exc)}
 
 
 # ── 更新 LLM 配置 ─────────────────────────────────────────────────────────────

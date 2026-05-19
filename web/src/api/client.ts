@@ -170,6 +170,31 @@ export const updateLLMSettings = (body: {
   api_key?: string
 }) => request<{ ok: boolean; message: string }>('/settings/llm', { method: 'POST', body: JSON.stringify(body) })
 
+// ── 报告配置 ──────────────────────────────────────────────────────────────────
+
+export interface ReportConfig {
+  projects_frequency: string
+  projects_cron: string
+  projects_days_back: number
+  communities_frequency: string
+  communities_cron: string
+  communities_days_back: number
+}
+
+export const getReportConfig = () => request<ReportConfig>('/settings/report')
+
+export const updateReportConfig = (body: {
+  projects_frequency: string
+  projects_hour: number
+  communities_frequency: string
+  communities_hour: number
+}) => request<{ ok: boolean; message: string; projects_cron: string; communities_cron: string }>(
+  '/settings/report', { method: 'POST', body: JSON.stringify(body) }
+)
+
+export const triggerReportNow = (template: 'projects' | 'communities') =>
+  request<{ ok: boolean; message: string }>(`/settings/report/trigger/${template}`, { method: 'POST' })
+
 export const testLLMSettings = (body: {
   profile: string
   model?: string

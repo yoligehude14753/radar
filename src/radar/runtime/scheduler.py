@@ -273,3 +273,17 @@ def _send_macos_notify(title: str, message: str) -> None:
         )
     except Exception:
         pass
+
+
+async def reschedule_reports(projects_cron: str, communities_cron: str) -> None:
+    """热更新报告调度（无需重启），同时更新 _run_render_* 的 days_back 参数。"""
+    from apscheduler.triggers.cron import CronTrigger
+    sched = get_scheduler()
+
+    # projects
+    sched.reschedule_job("render_projects", trigger=CronTrigger.from_crontab(projects_cron))
+    logger.info("报告调度热更新", template="projects", cron=projects_cron)
+
+    # communities
+    sched.reschedule_job("render_communities", trigger=CronTrigger.from_crontab(communities_cron))
+    logger.info("报告调度热更新", template="communities", cron=communities_cron)

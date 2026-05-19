@@ -18,8 +18,8 @@ data/cookies/
 radar.db
 
 # 输出文件（不提交生成的 HTML，太大）
-outputs/*.html
-outputs/
+/outputs/*.html
+/outputs/
 
 # 日志
 logs/

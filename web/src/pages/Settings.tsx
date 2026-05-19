@@ -7,9 +7,12 @@ import {
 import {
   SaveOutlined, ExperimentOutlined, ReloadOutlined, KeyOutlined,
   GithubOutlined, InfoCircleOutlined, ThunderboltOutlined,
-  CheckCircleOutlined, ExclamationCircleOutlined,
+  CheckCircleOutlined, ExclamationCircleOutlined, PlayCircleOutlined,
 } from '@ant-design/icons'
-import { getSettingsOverview, updateSourceSettings, updateLLMSettings, testLLMSettings } from '../api/client'
+import {
+  getSettingsOverview, updateSourceSettings, updateLLMSettings, testLLMSettings,
+  getReportConfig, updateReportConfig, triggerReportNow,
+} from '../api/client'
 
 const INTERVAL_OPTIONS = [
   { value: '15min', label: '15 分钟' },
@@ -458,6 +461,185 @@ function LLMTab() {
   )
 }
 
+// ── 报告 Tab ───────────────────────────────────────────────────────────────────
+
+const FREQ_OPTIONS = [
+  { value: 'daily',   label: '日频 — 每天生成（数据窗口：最近 1 天）' },
+  { value: 'weekly',  label: '周频 — 每周一生成（数据窗口：最近 7 天）' },
+  { value: 'monthly', label: '月频 — 每月 1 日生成（数据窗口：最近 30 天）' },
+  { value: 'manual',  label: '手动 — 不自动生成，只在此处手动触发' },
+]
+
+const FREQ_WINDOW: Record<string, string> = {
+  daily:   '最近 1 天新增/更新的数据',
+  weekly:  '最近 7 天新增/更新的数据',
+  monthly: '最近 30 天新增/更新的数据',
+  manual:  '全量历史数据',
+}
+
+function ReportTab() {
+  const { data, isLoading, refetch } = useQuery({
+    queryKey: ['report-config'],
+    queryFn: getReportConfig,
+  })
+
+  const [projFreq, setProjFreq] = useState<string | undefined>()
+  const [projHour, setProjHour] = useState<number | undefined>()
+  const [commFreq, setCommFreq] = useState<string | undefined>()
+  const [commHour, setCommHour] = useState<number | undefined>()
+  const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null)
+  const [trigResult, setTrigResult] = useState<Record<string, { ok: boolean; message: string }>>({})
+
+  const saveMut = useMutation({
+    mutationFn: updateReportConfig,
+    onSuccess: (res) => { setResult(res); refetch() },
+  })
+  const trigMut = useMutation({
+    mutationFn: triggerReportNow,
+    onSuccess: (res, tmpl) => setTrigResult(prev => ({ ...prev, [tmpl]: res })),
+  })
+
+  if (isLoading) return <div style={{ textAlign: 'center', padding: 40 }}><Spin /></div>
+  if (!data) return null
+
+  const pf = projFreq ?? data.projects_frequency
+  const ph = projHour ?? 6
+  const cf = commFreq ?? data.communities_frequency
+  const ch = commHour ?? 6
+
+  const ReportCard = ({
+    title, icon, freqKey, hourVal, onFreqChange, onHourChange, tmpl, cron, daysBack,
+  }: {
+    title: string; icon: string; freqKey: string; hourVal: number
+    onFreqChange: (v: string) => void; onHourChange: (v: number) => void
+    tmpl: 'projects' | 'communities'; cron: string; daysBack: number
+  }) => (
+    <Card
+      bordered={false}
+      style={{ background: '#0d1117', border: '1px solid #30363d', marginBottom: 16 }}
+      title={<Space><span>{icon}</span><span style={{ color: '#e6edf3', fontWeight: 600 }}>{title}</span></Space>}
+      extra={
+        <Button
+          size="small"
+          icon={<PlayCircleOutlined />}
+          loading={trigMut.isPending && trigMut.variables === tmpl}
+          onClick={() => trigMut.mutate(tmpl)}
+        >
+          立即生成
+        </Button>
+      }
+    >
+      {trigResult[tmpl] && (
+        <Alert
+          type={trigResult[tmpl].ok ? 'success' : 'error'}
+          message={trigResult[tmpl].message}
+          showIcon closable style={{ marginBottom: 12 }}
+          onClose={() => setTrigResult(prev => { const n = { ...prev }; delete n[tmpl]; return n })}
+        />
+      )}
+
+      <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+        <div style={{ flex: 1, minWidth: 260 }}>
+          <div style={{ color: '#8b949e', fontSize: 12, marginBottom: 6 }}>生成频率</div>
+          <Select
+            value={freqKey}
+            onChange={onFreqChange}
+            options={FREQ_OPTIONS}
+            style={{ width: '100%' }}
+          />
+          <div style={{ color: '#8b949e', fontSize: 11, marginTop: 6 }}>
+            数据范围：<span style={{ color: '#58a6ff' }}>{FREQ_WINDOW[freqKey]}</span>
+          </div>
+        </div>
+
+        {freqKey !== 'manual' && (
+          <div style={{ minWidth: 120 }}>
+            <div style={{ color: '#8b949e', fontSize: 12, marginBottom: 6 }}>生成时间（时）</div>
+            <Select
+              value={hourVal}
+              onChange={onHourChange}
+              options={Array.from({ length: 24 }, (_, i) => ({
+                value: i, label: `${String(i).padStart(2, '0')}:00`,
+              }))}
+              style={{ width: 100 }}
+            />
+          </div>
+        )}
+
+        <div style={{ minWidth: 200 }}>
+          <div style={{ color: '#8b949e', fontSize: 12, marginBottom: 6 }}>当前 cron 表达式</div>
+          <code style={{ color: '#58a6ff', fontSize: 12, background: '#161b22', padding: '4px 8px', borderRadius: 4 }}>
+            {cron}
+          </code>
+          {daysBack > 0 && (
+            <div style={{ color: '#8b949e', fontSize: 11, marginTop: 4 }}>
+              数据窗口：{daysBack} 天
+            </div>
+          )}
+        </div>
+      </div>
+    </Card>
+  )
+
+  return (
+    <div>
+      <Alert
+        type="info"
+        showIcon
+        message="报告按配置的频率自动生成，也可随时点击「立即生成」手动触发。调度更新后热生效，无需重启。"
+        style={{ marginBottom: 20 }}
+      />
+
+      <ReportCard
+        title="项目趋势报告（projects.html）"
+        icon="📄"
+        freqKey={pf}
+        hourVal={ph}
+        onFreqChange={setProjFreq}
+        onHourChange={setProjHour}
+        tmpl="projects"
+        cron={data.projects_cron}
+        daysBack={data.projects_days_back}
+      />
+
+      <ReportCard
+        title="社群地图报告（communities.html）"
+        icon="🌐"
+        freqKey={cf}
+        hourVal={ch}
+        onFreqChange={setCommFreq}
+        onHourChange={setCommHour}
+        tmpl="communities"
+        cron={data.communities_cron}
+        daysBack={data.communities_days_back}
+      />
+
+      {result && (
+        <Alert
+          type={result.ok ? 'success' : 'error'}
+          message={result.message}
+          showIcon closable style={{ marginBottom: 12 }}
+          onClose={() => setResult(null)}
+        />
+      )}
+
+      <Button
+        type="primary"
+        icon={<SaveOutlined />}
+        loading={saveMut.isPending}
+        onClick={() => saveMut.mutate({
+          projects_frequency: pf,
+          projects_hour: ph,
+          communities_frequency: cf,
+          communities_hour: ch,
+        })}
+      >
+        保存报告调度
+      </Button>
+    </div>
+  )
+}
+
 // ── 主页面 ────────────────────────────────────────────────────────────────────
 
 export default function Settings() {
@@ -500,6 +682,15 @@ export default function Settings() {
                 </span>
               ),
               children: <LLMTab />,
+            },
+            {
+              key: 'report',
+              label: (
+                <span>
+                  📅 报告调度
+                </span>
+              ),
+              children: <ReportTab />,
             },
           ]}
         />
