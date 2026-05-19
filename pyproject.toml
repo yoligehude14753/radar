@@ -1,0 +1,75 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "radar"
+version = "0.1.0"
+description = "AI 需求与趋势雷达 - 持续抓取 GitHub + Reddit，自动分析并输出结构化报告"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.11"
+authors = [{ name = "yoligehude" }]
+keywords = ["AI", "radar", "github", "reddit", "trend", "demand"]
+
+dependencies = [
+    # Web框架
+    "fastapi==0.115.9",
+    "uvicorn[standard]==0.34.2",
+    # 数据库
+    "sqlalchemy==2.0.40",
+    "asyncpg==0.30.0",
+    "aiosqlite==0.21.0",
+    "alembic==1.15.2",
+    # 调度
+    "apscheduler==3.11.0",
+    # HTTP
+    "httpx==0.28.1",
+    "aiohttp==3.11.16",
+    # 认证/Token
+    "playwright==1.51.0",
+    "cryptography==44.0.3",
+    # LLM（走 yoli_llm 中台，这里仅 OpenAI 兼容层）
+    "openai==1.77.0",
+    # 模板渲染
+    "jinja2==3.1.6",
+    "pillow==11.2.1",
+    # CLI
+    "typer==0.15.2",
+    "rich==14.0.0",
+    # 日志
+    "structlog==25.1.0",
+    "loguru==0.7.3",
+    # 工具
+    "python-dotenv==1.1.0",
+    "pydantic==2.11.3",
+    "pydantic-settings==2.9.1",
+    "tenacity==9.1.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.3.5",
+    "pytest-asyncio==0.26.0",
+    "pytest-cov==6.1.0",
+    "anyio[trio]>=4.0.0",
+]
+
+[project.scripts]
+radar = "radar.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-v --tb=short"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+ignore = ["E501", "N806"]

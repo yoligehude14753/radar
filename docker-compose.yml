@@ -1,0 +1,41 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: radar
+      POSTGRES_PASSWORD: radar
+      POSTGRES_DB: radar
+    ports:
+      - "5432:5432"
+    volumes:
+      - radar_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U radar -d radar"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  radar:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://radar:radar@db:5432/radar
+      SYNC_DATABASE_URL: postgresql+psycopg2://radar:radar@db:5432/radar
+    ports:
+      - "7090:7090"
+    volumes:
+      - ./outputs:/app/outputs
+      - ./logs:/app/logs
+      - ./data:/app/data
+    restart: unless-stopped
+
+volumes:
+  radar_pgdata:

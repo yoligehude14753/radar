@@ -1,0 +1,23 @@
+version: "3.9"
+
+# 纯本地模式：SQLite + ollama，无需 Docker PG
+# 使用方式：cp .env.example .env，将 DATABASE_URL 改为 sqlite 格式后：
+#   docker-compose -f docker-compose.pure-local.yml up
+
+services:
+  radar:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file: .env
+    environment:
+      DATABASE_URL: sqlite+aiosqlite:///./data/radar.db
+      SYNC_DATABASE_URL: sqlite:///./data/radar.db
+      LLM_PROFILE: ollama
+    ports:
+      - "7090:7090"
+    volumes:
+      - ./outputs:/app/outputs
+      - ./logs:/app/logs
+      - ./data:/app/data
+    restart: unless-stopped
