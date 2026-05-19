@@ -84,6 +84,17 @@ async def start_scheduler() -> None:
     )
     logger.info("注册 communities 报告任务", cron=settings.report_communities_cron)
 
+    # ── 自动评分（每 30 分钟）────────────────────────────────────────────
+    sched.add_job(
+        _run_score_items,
+        trigger=IntervalTrigger(minutes=30),
+        id="score_items",
+        name="自动评分",
+        replace_existing=True,
+        misfire_grace_time=300,
+    )
+    logger.info("注册自动评分任务（每 30 分钟）")
+
     # ── 监控巡检（每 5 分钟）────────────────────────────────────────────
     sched.add_job(
         _run_watcher,
@@ -149,6 +160,16 @@ async def _run_render_communities() -> None:
         logger.info("communities 报告渲染完成", **result)
     except Exception as exc:
         logger.exception("communities 报告渲染失败", error=str(exc))
+
+
+async def _run_score_items() -> None:
+    """自动评分未评分 Item"""
+    try:
+        from radar.analyzer.scorer import score_unscored_items
+        result = await score_unscored_items(limit=50)
+        logger.info("自动评分完成", **result)
+    except Exception as exc:
+        logger.exception("自动评分异常", error=str(exc))
 
 
 async def _run_watcher() -> None:

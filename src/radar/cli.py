@@ -219,6 +219,25 @@ def reports_cmd(
 # ── Token 管理 ────────────────────────────────────────────────────────────
 
 
+@app.command("score", help="手动触发 LLM 评分")
+def score_cmd(
+    source: str = typer.Option(None, "--source", "-s", help="过滤数据源"),
+    limit: int = typer.Option(50, "--limit", "-n", help="最多评分条数"),
+    force: bool = typer.Option(False, "--force", help="强制重新评分（覆盖已有评分）"),
+) -> None:
+    from radar.storage.database import init_db
+    from radar.analyzer.scorer import score_unscored_items
+
+    async def _run() -> None:
+        await init_db()
+        result = await score_unscored_items(source=source, limit=limit, force=force)
+        console.print(
+            f"[green]✓[/] 评分完成：成功 {result['scored']} 条，失败 {result['failed']} 条"
+        )
+
+    asyncio.run(_run())
+
+
 @app.command("token", help="交互式 Token 管理向导")
 def token_cmd(
     source: str = typer.Argument(..., help="数据源名称（github / reddit）"),
