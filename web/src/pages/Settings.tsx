@@ -5,8 +5,9 @@ import {
   Space, Divider, Tag, Tooltip, Spin,
 } from 'antd'
 import {
-  SaveOutlined, ExperimentOutlined, ReloadOutlined,
+  SaveOutlined, ExperimentOutlined, ReloadOutlined, KeyOutlined,
   GithubOutlined, InfoCircleOutlined, ThunderboltOutlined,
+  CheckCircleOutlined, ExclamationCircleOutlined,
 } from '@ant-design/icons'
 import { getSettingsOverview, updateSourceSettings, updateLLMSettings, testLLMSettings } from '../api/client'
 
@@ -48,25 +49,128 @@ const PROFILE_DESCS: Record<string, { label: string; tag: string; tagColor: stri
   },
 }
 
+// ── 单个数据源卡片 ────────────────────────────────────────────────────────────
+
+interface SourceCardProps {
+  icon: React.ReactNode
+  name: string
+  config: import('../api/client').SourceConfig
+  envEnabled: boolean
+  interval: string
+  onToggle: (v: boolean) => void
+  onIntervalChange: (v: string) => void
+  tokenHint?: React.ReactNode  // 已配置 token 时的提示
+}
+
+function SourceCard({
+  icon, name, config, envEnabled, interval,
+  onToggle, onIntervalChange, tokenHint,
+}: SourceCardProps) {
+  const prereqMet = config.prerequisites_met
+
+  // 真实状态：只有前提条件满足 + env 开关打开 才算"运行中"
+  const reallyEnabled = prereqMet && envEnabled
+
+  let statusTag: React.ReactNode
+  if (!prereqMet) {
+    statusTag = <Tag color="error" icon={<ExclamationCircleOutlined />}>需要配置</Tag>
+  } else if (reallyEnabled) {
+    statusTag = <Tag color="success" icon={<CheckCircleOutlined />}>运行中</Tag>
+  } else {
+    statusTag = <Tag color="default">已停用</Tag>
+  }
+
+  return (
+    <Card
+      bordered={false}
+      style={{
+        background: '#0d1117',
+        border: `1px solid ${!prereqMet ? '#f85149' : reallyEnabled ? '#238636' : '#30363d'}`,
+        marginBottom: 16,
+      }}
+      title={
+        <Space>
+          {icon}
+          <span style={{ color: '#e6edf3', fontWeight: 600 }}>{name}</span>
+          {statusTag}
+        </Space>
+      }
+      extra={
+        <Tooltip title={!prereqMet ? '请先完成下方配置步骤' : undefined}>
+          <Switch
+            checked={reallyEnabled}
+            disabled={!prereqMet}
+            onChange={onToggle}
+            checkedChildren="启用"
+            unCheckedChildren="停用"
+          />
+        </Tooltip>
+      }
+    >
+      {/* 未满足前提条件：展示引导步骤 */}
+      {!prereqMet && config.missing_prerequisite && (
+        <Alert
+          type="error"
+          showIcon
+          icon={<ExclamationCircleOutlined />}
+          message="启用前需先完成以下配置"
+          description={
+            <div>
+              <div style={{ marginBottom: 8 }}>{config.missing_prerequisite}</div>
+              <Button
+                size="small"
+                type="primary"
+                danger
+                href="/tokens"
+                icon={<KeyOutlined />}
+              >
+                前往配置凭证 →
+              </Button>
+            </div>
+          }
+          style={{ marginBottom: 12 }}
+        />
+      )}
+
+      <div style={{ color: '#8b949e', fontSize: 12, marginBottom: prereqMet ? 16 : 0 }}>
+        {config.description}
+      </div>
+
+      {/* 只有前提条件满足时才显示频率等配置 */}
+      {prereqMet && (
+        <Space align="center" style={{ marginTop: 8 }}>
+          <span style={{ color: '#8b949e', fontSize: 13 }}>抓取频率</span>
+          <Select
+            value={interval}
+            onChange={onIntervalChange}
+            options={INTERVAL_OPTIONS}
+            disabled={!reallyEnabled}
+            style={{ width: 160 }}
+          />
+          {tokenHint}
+        </Space>
+      )}
+    </Card>
+  )
+}
+
 // ── 数据源 Tab ─────────────────────────────────────────────────────────────────
 
 function SourcesTab() {
   const { data: overview, isLoading, refetch } = useQuery({
     queryKey: ['settings-overview'],
     queryFn: getSettingsOverview,
+    refetchInterval: 10_000,  // 定期刷新：用户配置完 token 后自动更新状态
   })
-  const [githubEnabled, setGithubEnabled] = useState<boolean | undefined>()
-  const [githubInterval, setGithubInterval] = useState<string | undefined>()
-  const [redditEnabled, setRedditEnabled] = useState<boolean | undefined>()
-  const [redditInterval, setRedditInterval] = useState<string | undefined>()
+  const [ghEnabled, setGhEnabled] = useState<boolean | undefined>()
+  const [ghInterval, setGhInterval] = useState<string | undefined>()
+  const [rdEnabled, setRdEnabled] = useState<boolean | undefined>()
+  const [rdInterval, setRdInterval] = useState<string | undefined>()
   const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null)
 
   const saveMut = useMutation({
     mutationFn: updateSourceSettings,
-    onSuccess: (res) => {
-      setResult(res)
-      refetch()
-    },
+    onSuccess: (res) => { setResult(res); refetch() },
   })
 
   if (isLoading) return <div style={{ textAlign: 'center', padding: 40 }}><Spin /></div>
@@ -74,10 +178,11 @@ function SourcesTab() {
 
   const gh = overview.github
   const rd = overview.reddit
-  const ghEnabled = githubEnabled ?? gh.enabled
-  const ghInterval = githubInterval ?? gh.interval
-  const rdEnabled = redditEnabled ?? rd.enabled
-  const rdInterval = redditInterval ?? rd.interval
+
+  const currentGhEnabled = ghEnabled ?? gh.env_enabled
+  const currentGhInterval = ghInterval ?? gh.interval
+  const currentRdEnabled = rdEnabled ?? rd.env_enabled
+  const currentRdInterval = rdInterval ?? rd.interval
 
   return (
     <div>
@@ -88,88 +193,32 @@ function SourcesTab() {
         style={{ marginBottom: 20 }}
       />
 
-      {/* GitHub */}
-      <Card
-        bordered={false}
-        style={{ background: '#0d1117', border: '1px solid #30363d', marginBottom: 16 }}
-        title={
-          <Space>
-            <GithubOutlined style={{ color: '#e6edf3' }} />
-            <span style={{ color: '#e6edf3', fontWeight: 600 }}>GitHub</span>
-            <Tag color={ghEnabled ? 'success' : 'default'}>{ghEnabled ? '已启用' : '已禁用'}</Tag>
-          </Space>
-        }
-        extra={
-          <Switch
-            checked={ghEnabled}
-            onChange={setGithubEnabled}
-            checkedChildren="启用"
-            unCheckedChildren="停用"
-          />
-        }
-      >
-        <div style={{ color: '#8b949e', fontSize: 12, marginBottom: 16 }}>
-          {gh.description}。抓取 Trending 项目 + AI / LLM / Agent / RAG 等关键词搜索结果。
-        </div>
-        <Space align="center">
-          <span style={{ color: '#8b949e', fontSize: 13 }}>抓取频率</span>
-          <Select
-            value={ghInterval}
-            onChange={setGithubInterval}
-            options={INTERVAL_OPTIONS}
-            disabled={!ghEnabled}
-            style={{ width: 160 }}
-          />
-          <Tooltip title="频率越高越及时，但消耗 GitHub API 速率配额越快。配置 GitHub Token 后限额 5000 次/h，建议 1h 以上">
+      <SourceCard
+        icon={<GithubOutlined style={{ color: '#e6edf3' }} />}
+        name="GitHub"
+        config={gh}
+        envEnabled={currentGhEnabled}
+        interval={currentGhInterval}
+        onToggle={setGhEnabled}
+        onIntervalChange={setGhInterval}
+        tokenHint={
+          <Tooltip title="无 Token：60次/h；配置 Token：5000次/h。建议前往「凭证管理」配置">
             <InfoCircleOutlined style={{ color: '#8b949e' }} />
           </Tooltip>
-        </Space>
-      </Card>
-
-      {/* Reddit */}
-      <Card
-        bordered={false}
-        style={{ background: '#0d1117', border: `1px solid ${rdEnabled ? '#30363d' : '#f85149'}`, marginBottom: 16 }}
-        title={
-          <Space>
-            <span style={{ fontSize: 16 }}>🤖</span>
-            <span style={{ color: '#e6edf3', fontWeight: 600 }}>Reddit</span>
-            <Tag color={rdEnabled ? 'success' : 'error'}>{rdEnabled ? '已启用' : '已禁用'}</Tag>
-          </Space>
         }
-        extra={
-          <Switch
-            checked={rdEnabled}
-            onChange={setRedditEnabled}
-            checkedChildren="启用"
-            unCheckedChildren="停用"
-          />
-        }
-      >
-        {!overview.reddit.enabled && (
-          <Alert
-            type="warning"
-            showIcon
-            message="Reddit 需要配置 OAuth App 才能正常抓取，请先前往「凭证管理」配置 Reddit Client ID"
-            style={{ marginBottom: 12 }}
-          />
-        )}
-        <div style={{ color: '#8b949e', fontSize: 12, marginBottom: 16 }}>
-          {rd.description}。覆盖 AI/ML/LLM 相关核心社区的热帖与新帖。
-        </div>
-        <Space align="center">
-          <span style={{ color: '#8b949e', fontSize: 13 }}>抓取频率</span>
-          <Select
-            value={rdInterval}
-            onChange={setRedditInterval}
-            options={INTERVAL_OPTIONS}
-            disabled={!rdEnabled}
-            style={{ width: 160 }}
-          />
-        </Space>
-      </Card>
+      />
 
-      {/* 未来平台预告 */}
+      <SourceCard
+        icon={<span style={{ fontSize: 16 }}>🤖</span>}
+        name="Reddit"
+        config={rd}
+        envEnabled={currentRdEnabled}
+        interval={currentRdInterval}
+        onToggle={setRdEnabled}
+        onIntervalChange={setRdInterval}
+      />
+
+      {/* 未来平台 */}
       <Card
         bordered={false}
         style={{ background: '#0d1117', border: '1px dashed #30363d', marginBottom: 20 }}
@@ -199,10 +248,10 @@ function SourcesTab() {
         icon={<SaveOutlined />}
         loading={saveMut.isPending}
         onClick={() => saveMut.mutate({
-          github_enabled: ghEnabled,
-          github_interval: ghInterval,
-          reddit_enabled: rdEnabled,
-          reddit_interval: rdInterval,
+          github_enabled: currentGhEnabled,
+          github_interval: currentGhInterval,
+          reddit_enabled: currentRdEnabled,
+          reddit_interval: currentRdInterval,
         })}
       >
         保存数据源配置

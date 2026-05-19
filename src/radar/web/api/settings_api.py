@@ -22,9 +22,12 @@ VALID_PROFILES = ["yunwu", "heyi", "ollama", "openai"]
 
 
 class SourceConfig(BaseModel):
-    enabled: bool
+    enabled: bool          # 实际有效状态 = env_enabled AND prerequisites_met
+    env_enabled: bool      # .env 里的开关值
     interval: str
     description: str
+    prerequisites_met: bool         # 运行前提是否全部满足
+    missing_prerequisite: str | None  # 缺失配置的说明文字
 
 
 class LLMProfileConfig(BaseModel):
@@ -78,21 +81,37 @@ async def get_settings_overview() -> SettingsOverview:
     def mask(key: str) -> str:
         return f"{key[:8]}***" if len(key) > 8 else ("已配置" if key else "未配置")
 
-    # 从环境变量读取 enabled 标志（默认 true）
     import os
-    github_enabled = os.environ.get("GITHUB_ENABLED", "true").lower() != "false"
-    reddit_enabled = os.environ.get("REDDIT_ENABLED", "true").lower() != "false"
+    github_env_enabled = os.environ.get("GITHUB_ENABLED", "true").lower() != "false"
+    reddit_env_enabled = os.environ.get("REDDIT_ENABLED", "true").lower() != "false"
+
+    # GitHub：无 Token 也能运行（速率降至 60 次/h），前提条件始终满足
+    github_prereq = True
+    github_missing: str | None = None
+
+    # Reddit：必须有 client_id + client_secret，否则 403 全部失败
+    reddit_prereq = bool(settings.reddit_client_id and settings.reddit_client_secret)
+    reddit_missing: str | None = (
+        None if reddit_prereq else
+        "需要先在「凭证管理」中配置 Reddit OAuth App（client_id + client_secret）"
+    )
 
     return SettingsOverview(
         github=SourceConfig(
-            enabled=github_enabled,
+            enabled=github_env_enabled and github_prereq,
+            env_enabled=github_env_enabled,
             interval=settings.github_crawl_interval,
             description="GitHub Trending / 关键词搜索",
+            prerequisites_met=github_prereq,
+            missing_prerequisite=github_missing,
         ),
         reddit=SourceConfig(
-            enabled=reddit_enabled,
+            enabled=reddit_env_enabled and reddit_prereq,
+            env_enabled=reddit_env_enabled,
             interval=settings.reddit_crawl_interval,
             description="r/MachineLearning · r/artificial 等 13 个社区",
+            prerequisites_met=reddit_prereq,
+            missing_prerequisite=reddit_missing,
         ),
         active_profile=settings.llm_profile.value,
         yunwu=LLMProfileConfig(

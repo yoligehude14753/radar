@@ -132,7 +132,14 @@ export const testRedditToken = (creds: {
 
 // ── 系统设置 ──────────────────────────────────────────────────────────────────
 
-export interface SourceConfig { enabled: boolean; interval: string; description: string }
+export interface SourceConfig {
+  enabled: boolean           // 真实有效状态 = env_enabled AND prerequisites_met
+  env_enabled: boolean       // .env 里的开关值
+  interval: string
+  description: string
+  prerequisites_met: boolean
+  missing_prerequisite: string | null
+}
 export interface LLMProfileConfig { profile: string; model: string; base_url: string; api_key_masked: string }
 export interface SettingsOverview {
   github: SourceConfig
