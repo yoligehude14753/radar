@@ -55,7 +55,7 @@ export default function Dashboard() {
           <Card bordered={false} style={{ background: '#161b22', border: '1px solid #30363d' }}>
             <Statistic
               title={<span style={{ color: '#8b949e' }}>API 状态</span>}
-              value={health?.status ?? '—'}
+              value={health?.status === 'ok' ? '运行中' : (health?.status ?? '—')}
               valueStyle={{ color: health?.status === 'ok' ? '#3fb950' : '#f85149' }}
               prefix={health?.status === 'ok' ? <CheckCircleOutlined /> : <ExclamationCircleOutlined />}
             />
@@ -171,8 +171,9 @@ export default function Dashboard() {
       {/* LLM Profile */}
       {health && (
         <div style={{ marginTop: 16, color: '#8b949e', fontSize: 12 }}>
-          LLM Profile: <span style={{ color: '#58a6ff' }}>{health.llm_profile}</span>
-          &nbsp;·&nbsp; 版本: <span style={{ color: '#58a6ff' }}>{health.version}</span>
+          LLM: <span style={{ color: '#58a6ff' }}>{health.llm_profile}</span>
+          &nbsp;·&nbsp; DB: <span style={{ color: '#58a6ff' }}>{health.db_type}</span>
+          &nbsp;·&nbsp; v<span style={{ color: '#58a6ff' }}>{health.version}</span>
         </div>
       )}
     </div>

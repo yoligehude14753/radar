@@ -16,7 +16,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 
 // ── 系统 ─────────────────────────────────────────────────────────────────
 
-export const getHealth = () => request<{ status: string; version: string; db_url: string; llm_profile: string }>('/health')
+export const getHealth = () => request<{ status: string; version: string; db_type: string; llm_profile: string }>('/health')
 
 // ── 数据源 ────────────────────────────────────────────────────────────────
 
