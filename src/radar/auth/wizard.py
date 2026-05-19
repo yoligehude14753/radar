@@ -55,5 +55,33 @@ async def _github_wizard(action: str) -> None:
 
 
 async def _reddit_wizard(action: str) -> None:
-    """Reddit OAuth 向导（S3 实现）"""
-    console.print(f"[yellow]Reddit Token 向导（{action}）将在 S3 中实现[/]")
+    """Reddit OAuth 向导"""
+    if action == "wizard":
+        from radar.auth.strategies.reddit import RedditOAuthWizard
+        wizard = RedditOAuthWizard()
+        creds = await wizard.harvest()
+        if creds:
+            console.print(
+                "\n[bold green]下一步：[/] 将凭证写入 .env 文件：\n"
+                f"  [cyan]REDDIT_CLIENT_ID={creds['client_id']}[/]\n"
+                f"  [cyan]REDDIT_CLIENT_SECRET={creds['client_secret']}[/]\n"
+                "然后重启 radar 服务即可生效。"
+            )
+    elif action == "status":
+        from radar.config import settings
+        from radar.sources.reddit.client import RedditClient
+        try:
+            async with RedditClient(
+                client_id=settings.reddit_client_id,
+                client_secret=settings.reddit_client_secret,
+            ) as client:
+                ok = await client.health_check()
+            if ok:
+                mode = "OAuth" if settings.reddit_client_id else "公开 API"
+                console.print(f"[green]✓[/] Reddit API 连通 ({mode})")
+            else:
+                console.print("[red]✗[/] Reddit API 不可达")
+        except Exception as exc:
+            console.print(f"[red]✗[/] Reddit 连接失败: {exc}")
+    else:
+        console.print(f"[red]未知 action: {action}[/]（支持：status / wizard）")
