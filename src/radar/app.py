@@ -10,12 +10,15 @@ from fastapi.staticfiles import StaticFiles
 
 from radar.config import settings
 from radar.storage.database import close_db, init_db
+from radar.runtime.scheduler import start_scheduler, stop_scheduler
 
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     await init_db()
+    await start_scheduler()
     yield
+    await stop_scheduler()
     await close_db()
 
 

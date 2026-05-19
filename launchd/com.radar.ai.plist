@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Radar AI 趋势平台 - macOS 后台自动启动 -->
+    <key>Label</key>
+    <string>com.radar.ai</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <!-- 安装后替换为实际 radar 可执行文件路径 -->
+        <!-- 运行 `which radar` 或 `pip show radar` 查看路径 -->
+        <string>/opt/homebrew/bin/radar</string>
+        <string>serve</string>
+        <string>--host</string>
+        <string>127.0.0.1</string>
+        <string>--port</string>
+        <string>7090</string>
+    </array>
+
+    <!-- 工作目录（包含 .env 文件的目录） -->
+    <key>WorkingDirectory</key>
+    <string>/Users/REPLACE_WITH_USERNAME/radar</string>
+
+    <!-- 崩溃后自动重启 -->
+    <key>KeepAlive</key>
+    <dict>
+        <key>Crashed</key>
+        <true/>
+    </dict>
+
+    <!-- 启动时延迟 30s（等待网络就绪） -->
+    <key>StartInterval</key>
+    <integer>30</integer>
+
+    <!-- 日志 -->
+    <key>StandardOutPath</key>
+    <string>/tmp/radar.stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/radar.stderr.log</string>
+
+    <!-- 环境变量（可选，.env 文件已覆盖大部分） -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+
+    <!-- 登录后启动 -->
+    <key>RunAtLoad</key>
+    <true/>
+</dict>
+</plist>
