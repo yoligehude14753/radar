@@ -1,10 +1,11 @@
 """数据源状态 API"""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import asyncio
+from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import func, select
 
@@ -61,3 +62,19 @@ async def list_sources() -> list[SourceStat]:
                 last_run_items_new=run.items_new if run else None,
             ))
         return result
+
+
+@router.post("/{source}/crawl", summary="手动触发抓取")
+async def trigger_crawl(source: str) -> dict:
+    supported = {"github", "reddit"}
+    if source not in supported:
+        raise HTTPException(status_code=404, detail=f"不支持的数据源: {source}")
+
+    if source == "github":
+        from radar.sources.github.crawler import crawl_github
+        asyncio.create_task(crawl_github())
+    elif source == "reddit":
+        from radar.sources.reddit.crawler import crawl_reddit
+        asyncio.create_task(crawl_reddit())
+
+    return {"status": "started", "source": source}
