@@ -9,7 +9,7 @@ from typing import Optional
 from pydantic import Field
 from pydantic_settings import BaseSettings
 
-ROOT_DIR = Path(__file__).parents[3]  # radar/
+ROOT_DIR = Path(__file__).parents[2]  # radar/  (src/radar/config.py → src/radar → src → radar)
 DATA_DIR = ROOT_DIR / "data"
 OUTPUTS_DIR = ROOT_DIR / "outputs"
 LOGS_DIR = ROOT_DIR / "logs"

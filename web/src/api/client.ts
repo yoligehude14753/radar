@@ -90,3 +90,53 @@ export const executeAction = (incidentId: string, actionKey: string) =>
     `/incidents/${incidentId}/actions/${actionKey}`,
     { method: 'POST' }
   )
+
+// ── Token 管理 ────────────────────────────────────────────────────────────
+
+export interface TokenStatus {
+  github_configured: boolean
+  reddit_configured: boolean
+  github_masked: string | null
+  reddit_client_masked: string | null
+}
+
+export interface TestResult {
+  ok: boolean
+  message: string
+}
+
+export const getTokenStatus = () => request<TokenStatus>('/tokens/status')
+
+export const testGithubToken = (token: string) =>
+  request<TestResult>('/tokens/github/test', {
+    method: 'POST',
+    body: JSON.stringify({ token }),
+  })
+
+export const saveGithubToken = (token: string) =>
+  request<{ ok: boolean; message: string }>('/tokens/github/save', {
+    method: 'POST',
+    body: JSON.stringify({ token }),
+  })
+
+export const testRedditToken = (creds: {
+  client_id: string
+  client_secret: string
+  username?: string
+  password?: string
+}) =>
+  request<TestResult>('/tokens/reddit/test', {
+    method: 'POST',
+    body: JSON.stringify(creds),
+  })
+
+export const saveRedditToken = (creds: {
+  client_id: string
+  client_secret: string
+  username?: string
+  password?: string
+}) =>
+  request<{ ok: boolean; message: string }>('/tokens/reddit/save', {
+    method: 'POST',
+    body: JSON.stringify(creds),
+  })
