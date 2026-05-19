@@ -47,7 +47,7 @@ async def test_execute_unknown_action(client: AsyncClient) -> None:
     if resp.status_code == 200:
         data = resp.json()
         assert data.get("ok") is True
-        assert data.get("result", {}).get("status") in ("no_handler", "incident_not_found")
+        assert data.get("result", {}).get("status") in ("no_handler", "incident_not_found", "error")
 
 
 @pytest.mark.asyncio

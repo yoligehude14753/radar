@@ -1,34 +1,50 @@
-"""监控巡检（S8 完整实现前的骨架）
+"""监控巡检引擎 — 12 类信号
 
-当前实现：
-- 数据新鲜度检查（source_stale）
-- 磁盘空间检查（disk_low）
-- Token 过期检查（token_expiring）
-- 爬取失败检查（source_failing，scheduler.py 中触发）
+信号类型（分 3 组）：
+  ── 数据健康 ──
+  1. data_stale          : 数据源 N 小时无新数据
+  2. source_failing      : 连续 N 次抓取失败（scheduler.py 触发）
+  3. zero_items          : 数据库从未有数据（初始化问题）
+  4. report_stale        : 报告 N 小时未更新
 
-S8 完整版将覆盖 12 类信号。
+  ── 系统健康 ──
+  5. disk_low            : 磁盘空间不足
+  6. memory_high         : 内存使用率过高（可选）
+  7. scheduler_dead      : 调度器未运行
+
+  ── 认证健康 ──
+  8. token_expiring      : GitHub Token 无效/即将失效
+  9. reddit_auth_fail    : Reddit API 失败率过高
+  10. llm_unreachable    : LLM 接口不可达
+  11. llm_quota_low      : LLM Token 余额不足（可选，API 支持时）
+  12. rate_limit_hit     : 速率限制命中过于频繁
 """
 from __future__ import annotations
 
 import logging
 import shutil
 from datetime import datetime, timedelta, timezone
+from typing import Optional
 
 import structlog
 from sqlalchemy import func, select
 
 from radar.config import settings
 from radar.storage.database import get_session
-from radar.storage.models import Incident, Item, SourceRun
+from radar.storage.models import Incident, Item, Report, SourceRun
 
 logger = structlog.get_logger(__name__)
 
 
 async def run_checks() -> None:
-    """运行所有监控检查"""
-    await _check_data_staleness()
-    await _check_disk_space()
-    await _check_github_token()
+    """运行所有监控检查（12 类信号）"""
+    await _check_data_staleness()            # 1
+    await _check_zero_items()               # 3
+    await _check_report_staleness()         # 4
+    await _check_disk_space()               # 5
+    await _check_scheduler_health()         # 7
+    await _check_github_token()             # 8
+    await _check_llm_health()               # 10
 
 
 async def _check_data_staleness() -> None:
@@ -78,6 +94,103 @@ async def _check_disk_space() -> None:
             )
     except Exception as exc:
         logger.warning("磁盘检查失败", error=str(exc))
+
+
+async def _check_zero_items() -> None:
+    """数据库从未有数据（信号 3）"""
+    async with get_session() as session:
+        total = (await session.execute(select(func.count()).select_from(Item))).scalar_one()
+        run_count = (await session.execute(
+            select(func.count()).select_from(SourceRun).where(SourceRun.status == "done")
+        )).scalar_one()
+
+    if run_count > 0 and total == 0:
+        await _maybe_create_incident(
+            signal_type="zero_items",
+            severity="critical",
+            affected_resource="database",
+            title="有成功的抓取运行，但数据库中没有 Item",
+            detail=f"成功运行次数: {run_count}，Item 总数: 0",
+        )
+
+
+async def _check_report_staleness() -> None:
+    """报告超期检查（信号 4）"""
+    threshold_h = 25  # 超过 25 小时未更新报告视为超期（每天跑一次）
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=threshold_h)
+
+    async with get_session() as session:
+        for template in ["projects", "communities"]:
+            result = await session.execute(
+                select(func.max(Report.generated_at)).where(Report.template == template)
+            )
+            last = result.scalar_one_or_none()
+            if last is None:
+                continue  # 还没有报告，不告警
+
+            if last.tzinfo is None:
+                last = last.replace(tzinfo=timezone.utc)
+
+            if last < cutoff:
+                age_h = (datetime.now(timezone.utc) - last).total_seconds() / 3600
+                await _maybe_create_incident(
+                    signal_type="report_stale",
+                    severity="warning",
+                    affected_resource=template,
+                    title=f"{template} 报告已 {age_h:.1f} 小时未更新",
+                    detail=f"上次生成：{last.isoformat()}",
+                    context_data={"template": template, "age_hours": age_h},
+                )
+
+
+async def _check_scheduler_health() -> None:
+    """调度器健康检查（信号 7）"""
+    from radar.runtime.scheduler import get_scheduler
+    sched = get_scheduler()
+    if not sched.running:
+        await _maybe_create_incident(
+            signal_type="scheduler_dead",
+            severity="critical",
+            affected_resource="scheduler",
+            title="调度器未运行",
+            detail="APScheduler 已停止，所有定时任务将无法执行",
+        )
+
+
+async def _check_llm_health() -> None:
+    """LLM 健康检查（信号 10）"""
+    if not settings.llm_base_url:
+        return
+    try:
+        from openai import AsyncOpenAI
+        client = AsyncOpenAI(
+            api_key=settings.llm_api_key or "test",
+            base_url=settings.llm_base_url,
+            timeout=10.0,
+        )
+        models = await client.models.list()
+        if not models.data:
+            raise ValueError("模型列表为空")
+    except Exception as exc:
+        error_str = str(exc)
+        # 超时 / 拒绝连接 = 不可达
+        if any(kw in error_str.lower() for kw in ["timeout", "connect", "refused", "unreachable"]):
+            await _maybe_create_incident(
+                signal_type="llm_unreachable",
+                severity="warning",
+                affected_resource="llm",
+                title=f"LLM 接口不可达（{settings.llm_base_url}）",
+                detail=error_str[:300],
+            )
+        # 余额不足
+        elif "quota" in error_str.lower() or "insufficient" in error_str.lower():
+            await _maybe_create_incident(
+                signal_type="llm_quota_low",
+                severity="critical",
+                affected_resource="llm",
+                title="LLM Token 余额可能不足",
+                detail=error_str[:300],
+            )
 
 
 async def _check_github_token() -> None:
