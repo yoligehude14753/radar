@@ -51,20 +51,24 @@ async def crawl_reddit(dry_run: bool = False) -> dict:
         run_id = await _create_run(since_dt.isoformat())
 
     items_raw: list[dict] = []
+    auth_error: Optional[str] = None
     try:
         async with RedditClient(
             client_id=client_id,
             client_secret=client_secret,
             user_agent=user_agent,
         ) as client:
-            items_raw, success_count = await _fetch_all_subreddits(client, since_dt)
+            items_raw, success_count, auth_error = await _fetch_all_subreddits(client, since_dt)
         log.info("Reddit 抓取完成", raw_count=len(items_raw), success_subreddits=success_count)
 
         # 全部 subreddit 失败 = 系统性错误（网络/认证问题）
         if success_count == 0 and len(AI_SUBREDDITS) > 0:
-            error_msg = "所有 subreddit 均抓取失败，可能是网络或认证问题"
+            error_msg = auth_error or "所有 subreddit 均抓取失败，可能是网络或认证问题"
             if run_id:
                 await _fail_run(run_id, error_msg)
+            # 认证失败时创建 Incident 引导用户
+            if auth_error and "403" in auth_error:
+                await _create_auth_incident()
             return {"status": "error", "error": error_msg}
 
     except Exception as exc:
@@ -87,40 +91,56 @@ async def crawl_reddit(dry_run: bool = False) -> dict:
 # ── 抓取逻辑 ──────────────────────────────────────────────────────────────
 
 
-async def _fetch_all_subreddits(client: RedditClient, since_dt: datetime) -> tuple[list[dict], int]:
+async def _fetch_all_subreddits(
+    client: RedditClient,
+    since_dt: datetime,
+) -> tuple[list[dict], int, Optional[str]]:
     """
     遍历 AI_SUBREDDITS，每个获取热门 + 最新帖子。
-    过滤掉 since_dt 之前的内容。
-    返回 (posts, success_count)
+    返回 (posts, success_count, first_auth_error_msg)
+    - success_count: 至少获取到 1 条帖子的 subreddit 数量
+    - first_auth_error_msg: 非 None 表示遇到认证类错误
     """
     all_posts: list[dict] = []
     seen_ids: set[str] = set()
     success_count = 0
+    auth_error_msg: Optional[str] = None
 
     for subreddit in AI_SUBREDDITS:
         try:
-            # 热门帖子（周维度）
             hot_posts = await client.get_subreddit_hot(subreddit, limit=25)
             for post in hot_posts:
                 _dedup_add(post, since_dt, seen_ids, all_posts)
 
-            # 等待避免限速（公开 API ~30 req/10min）
             await asyncio.sleep(2.0)
 
-            # 最新帖子
             new_posts, _ = await client.get_subreddit_new(subreddit, limit=25)
             for post in new_posts:
                 _dedup_add(post, since_dt, seen_ids, all_posts)
 
             await asyncio.sleep(1.5)
-            success_count += 1
+
+            # 只有实际拿到帖子才算成功
+            if hot_posts or new_posts:
+                success_count += 1
+
+        except PermissionError as exc:
+            err_str = str(exc)
+            logger.warning("Reddit 认证失败", subreddit=subreddit, error=err_str[:200])
+            if auth_error_msg is None:
+                auth_error_msg = err_str
+            # 403 全局性，不必再试其他 subreddit
+            if "403" in err_str:
+                break
+            await asyncio.sleep(5.0)
+            continue
 
         except Exception as exc:
             logger.warning("Reddit 抓取 subreddit 失败", subreddit=subreddit, error=str(exc))
             await asyncio.sleep(5.0)
             continue
 
-    return all_posts, success_count
+    return all_posts, success_count, auth_error_msg
 
 
 def _dedup_add(
@@ -215,6 +235,56 @@ async def _fail_run(run_id: str, error: str) -> None:
 
 
 # ── 数据写入 ──────────────────────────────────────────────────────────────
+
+
+async def _create_auth_incident() -> None:
+    """Reddit 403 → 创建认证告警，引导用户配置 OAuth"""
+    from radar.storage.models import Incident, IncidentAction
+    try:
+        async with get_session() as session:
+            # 24h 内不重复创建
+            from sqlalchemy import and_
+            from datetime import timedelta
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+            existing = await session.execute(
+                select(Incident.id).where(
+                    and_(
+                        Incident.signal_type == "reddit_auth_fail",
+                        Incident.status == "open",
+                        Incident.detected_at >= cutoff,
+                    )
+                )
+            )
+            if existing.scalar_one_or_none():
+                return
+
+            inc = Incident(
+                signal_type="reddit_auth_fail",
+                severity="warning",
+                affected_resource="reddit",
+                title="Reddit API 需要配置 OAuth 凭证",
+                detail=(
+                    "Reddit 已要求所有访问使用 OAuth 认证，匿名 API 返回 403。\n"
+                    "请运行 `radar token reddit` 完成引导，或在 Web UI → Token 管理 页查看步骤。\n"
+                    "配置完成后重新启动服务即可自动恢复抓取。"
+                ),
+                status="open",
+                detected_at=datetime.now(timezone.utc),
+            )
+            session.add(inc)
+            await session.flush()
+
+            action = IncidentAction(
+                incident_id=inc.id,
+                action_key="refresh_token",
+                label="配置 Reddit OAuth",
+                endpoint="/tokens",
+                order=0,
+            )
+            session.add(action)
+            logger.info("已创建 Reddit 认证告警 Incident", incident_id=inc.id)
+    except Exception as exc:
+        logger.warning("创建 Reddit 认证 Incident 失败", error=str(exc))
 
 
 async def _save_items(items_raw: list[dict], run_id: Optional[str]) -> int:

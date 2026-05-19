@@ -30,35 +30,32 @@ from radar.analyzer.domain_meta import classify_domain, calc_domain_score, DOMAI
 logger = structlog.get_logger(__name__)
 
 # QAG 评分 Prompt（4 维度，输出结构化 JSON）
-_SCORE_PROMPT = """你是一个 AI 产品需求分析师。
-分析以下 GitHub 项目或 Reddit 帖子，给出四个维度的评分（0.0-1.0）：
+_SCORE_PROMPT = """你是一个 AI 产品需求分析师。请独立分析以下项目，给出真实评分，不要使用固定值。
 
-1. pain（用户痛点）：解决的问题有多强烈的用户需求
-2. market（市场规模）：目标市场的商业潜力（0=个人工具, 1=十亿美元市场）
-3. feasibility（技术可行）：当前技术能否实现，竞争壁垒高低
-4. velocity（增速信号）：是否处于快速增长期（star 增速/讨论热度）
-
-同时给出最匹配的 AI 领域分类（domain）。
-
+项目信息：
 标题：{title}
 内容：{content}
 Stars：{stars}
 Topics：{topics}
 
-请以 JSON 格式返回：
-{{
-  "pain": 0.8,
-  "market": 0.6,
-  "feasibility": 0.7,
-  "velocity": 0.5,
-  "domain": "coding",
-  "reason": "简短理由（50字以内）"
-}}
+评分维度（每项独立判断，范围 0.0-1.0，必须体现差异）：
+- pain：用户痛点强度（0=无明显痛点，1=极强烈需求，如生产力瓶颈/安全漏洞）
+- market：市场规模潜力（0=极小众个人工具，1=数十亿规模平台级市场）
+- feasibility：技术可行性（0=核心技术尚未突破，1=成熟技术栈易实现）
+- velocity：增速信号（0=停滞/下降，1=病毒式传播/星数周翻番）
 
-domain 必须是以下之一：
-coding, infra, browser, rag, chatbot, ai4science, personal, finance, social, creative, multimodal, hardware
+判断标准：
+- Stars>{stars_threshold}：velocity 应 >= 0.6
+- 纯个人工具/hobby project：market 应 <= 0.3
+- 与 OpenAI/Claude 强竞争：feasibility 应 <= 0.4
 
-只输出 JSON，不要任何其他文字。"""
+领域（从以下选一个最匹配）：
+coding（编程工具）, infra（基础设施）, browser（浏览器/UI）, rag（检索增强）,
+chatbot（对话机器人）, ai4science（科学AI）, personal（个人助理）, finance（金融）,
+social（社交/内容）, creative（创意生成）, multimodal（多模态）, hardware（硬件/端侧）
+
+仅输出 JSON，格式如下（所有数值必须真实计算，禁止照抄示例）：
+{{"pain": <float>, "market": <float>, "feasibility": <float>, "velocity": <float>, "domain": "<id>", "reason": "<30字内理由>"}}"""
 
 
 def _make_llm_client() -> AsyncOpenAI:
@@ -98,11 +95,13 @@ async def score_item(item_id: str, force: bool = False) -> Optional[dict]:
     topics = platform_data.get("topics", [])
     content = (item.content or "")[:1000]  # 截断，避免超 token
 
+    stars_threshold = 500 if stars > 500 else (100 if stars > 100 else 10)
     prompt = _SCORE_PROMPT.format(
         title=item.title or "",
         content=content,
         stars=stars,
-        topics=", ".join(topics[:10]),
+        topics=", ".join(topics[:10]) or "无",
+        stars_threshold=stars_threshold,
     )
 
     # 调用 LLM
@@ -142,8 +141,15 @@ async def score_item(item_id: str, force: bool = False) -> Optional[dict]:
     # 综合分：4 维度加权平均（pain 权重最高）
     composite = (pain * 0.35 + market * 0.30 + feasibility * 0.20 + velocity * 0.15)
 
-    # 写入评分和标签
+    # 写入评分和标签（先删旧记录，避免重复）
     async with get_session() as session:
+        from sqlalchemy import delete
+        await session.execute(
+            delete(Score).where(Score.item_id == item_id, Score.evaluator == "qag")
+        )
+        await session.execute(
+            delete(Score).where(Score.item_id == item_id, Score.evaluator == "domain_classifier")
+        )
         score = Score(
             item_id=item_id,
             evaluator="qag",

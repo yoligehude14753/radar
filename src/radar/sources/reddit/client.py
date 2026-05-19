@@ -131,13 +131,20 @@ class RedditClient:
                 await asyncio.sleep(min(retry_after, 120))
                 continue
 
-            if r.status_code in (401, 403):
-                # token 失效，尝试刷新一次
+            if r.status_code == 401:
                 if self._client_id and attempt == 0:
                     await self._refresh_token()
                     continue
-                logger.warning("Reddit 认证失败 %d: %s", r.status_code, path)
-                return {}
+                raise PermissionError(f"Reddit 认证失败 401: {path}（token 已失效）")
+
+            if r.status_code == 403:
+                # Reddit 公开 API 已要求 OAuth，无 token 时全部 403
+                msg = (
+                    f"Reddit 返回 403: {path}。"
+                    "Reddit 已禁止匿名访问，请配置 REDDIT_CLIENT_ID / REDDIT_CLIENT_SECRET。"
+                    "引导：radar token reddit"
+                )
+                raise PermissionError(msg)
 
             logger.warning("Reddit 返回 %d: %s", r.status_code, path)
             return {}
