@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -111,21 +112,25 @@ async def score_item(item_id: str, force: bool = False) -> Optional[dict]:
             model=settings.llm_model,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.1,
-            max_tokens=300,
+            # Thinking models (e.g. MiniMax-M2.7) emit a long <think> block
+            # before the JSON; 300 tokens was all spent thinking so the JSON
+            # never appeared. Give ample room — the JSON itself is tiny.
+            max_tokens=4096,
         )
         raw_text = response.choices[0].message.content or ""
     except Exception as exc:
         logger.exception("LLM 评分失败", item_id=item_id, error=str(exc))
         return None
 
-    # 解析响应
+    # 解析响应。Thinking 模型会输出 <think>…</think> 推理块（甚至带
+    # markdown），需先剥离再提取 JSON（取最外层 {…}）。
+    cleaned = re.sub(r"<think>.*?</think>", "", raw_text, flags=re.DOTALL).strip()
     try:
-        # 提取 JSON（可能有前缀文本）
-        start = raw_text.find("{")
-        end = raw_text.rfind("}") + 1
+        start = cleaned.find("{")
+        end = cleaned.rfind("}") + 1
         if start == -1 or end == 0:
             raise ValueError(f"响应中没有 JSON: {raw_text[:200]}")
-        score_data = json.loads(raw_text[start:end])
+        score_data = json.loads(cleaned[start:end])
     except (json.JSONDecodeError, ValueError) as exc:
         logger.warning("LLM 响应解析失败", item_id=item_id, error=str(exc), raw=raw_text[:200])
         return None
