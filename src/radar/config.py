@@ -40,9 +40,11 @@ class Settings(BaseSettings):
     )
 
     # ── LLM ───────────────────────────────────────
-    # Default provider after the 2026-05 migration: Zhipu GLM-5.1 cloud
-    # (OpenAI-compatible). Only ZHIPU_API_KEY needs filling in .env.
-    llm_profile: LLMProfile = Field(default=LLMProfile.zhipu, alias="LLM_PROFILE")
+    # Default provider: yunwu MiniMax-M2.7 (the one brain shared with
+    # heyi-eval, with a working key). The ``zhipu`` GLM-5.1 profile is
+    # ready and one ``LLM_PROFILE=zhipu`` away once a valid Zhipu key
+    # exists.
+    llm_profile: LLMProfile = Field(default=LLMProfile.yunwu, alias="LLM_PROFILE")
 
     zhipu_api_key: str = Field(default="", alias="ZHIPU_API_KEY")
     zhipu_base_url: str = Field(
@@ -52,7 +54,7 @@ class Settings(BaseSettings):
 
     yunwu_api_key: str = Field(default="", alias="YUNWU_API_KEY")
     yunwu_base_url: str = Field(default="https://yunwu.ai/v1", alias="YUNWU_BASE_URL")
-    yunwu_model: str = Field(default="gpt-5.4-mini", alias="YUNWU_MODEL")
+    yunwu_model: str = Field(default="MiniMax-M2.7", alias="YUNWU_MODEL")
 
     heyi_api_key: str = Field(default="sk-heyi-local", alias="HEYI_API_KEY")
     heyi_base_url: str = Field(default="http://heyi.local:8000/v1", alias="HEYI_BASE_URL")
