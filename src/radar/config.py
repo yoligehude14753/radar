@@ -19,6 +19,7 @@ for d in [DATA_DIR, OUTPUTS_DIR, LOGS_DIR]:
 
 
 class LLMProfile(str, Enum):
+    zhipu = "zhipu"
     heyi = "heyi"
     yunwu = "yunwu"
     ollama = "ollama"
@@ -39,7 +40,15 @@ class Settings(BaseSettings):
     )
 
     # ── LLM ───────────────────────────────────────
-    llm_profile: LLMProfile = Field(default=LLMProfile.yunwu, alias="LLM_PROFILE")
+    # Default provider after the 2026-05 migration: Zhipu GLM-5.1 cloud
+    # (OpenAI-compatible). Only ZHIPU_API_KEY needs filling in .env.
+    llm_profile: LLMProfile = Field(default=LLMProfile.zhipu, alias="LLM_PROFILE")
+
+    zhipu_api_key: str = Field(default="", alias="ZHIPU_API_KEY")
+    zhipu_base_url: str = Field(
+        default="https://open.bigmodel.cn/api/paas/v4", alias="ZHIPU_BASE_URL"
+    )
+    zhipu_model: str = Field(default="glm-5.1", alias="ZHIPU_MODEL")
 
     yunwu_api_key: str = Field(default="", alias="YUNWU_API_KEY")
     yunwu_base_url: str = Field(default="https://yunwu.ai/v1", alias="YUNWU_BASE_URL")
@@ -96,6 +105,7 @@ class Settings(BaseSettings):
     @property
     def llm_api_key(self) -> str:
         mapping = {
+            LLMProfile.zhipu: self.zhipu_api_key,
             LLMProfile.heyi: self.heyi_api_key,
             LLMProfile.yunwu: self.yunwu_api_key,
             LLMProfile.ollama: self.ollama_api_key,
@@ -106,6 +116,7 @@ class Settings(BaseSettings):
     @property
     def llm_base_url(self) -> str:
         mapping = {
+            LLMProfile.zhipu: self.zhipu_base_url,
             LLMProfile.heyi: self.heyi_base_url,
             LLMProfile.yunwu: self.yunwu_base_url,
             LLMProfile.ollama: self.ollama_base_url,
@@ -116,6 +127,7 @@ class Settings(BaseSettings):
     @property
     def llm_model(self) -> str:
         mapping = {
+            LLMProfile.zhipu: self.zhipu_model,
             LLMProfile.heyi: self.heyi_model,
             LLMProfile.yunwu: self.yunwu_model,
             LLMProfile.ollama: self.ollama_model,
