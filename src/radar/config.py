@@ -95,6 +95,14 @@ class Settings(BaseSettings):
     max_items_per_run: int = Field(default=500, alias="MAX_ITEMS_PER_RUN")
     raw_blob_retention_days: int = Field(default=0, alias="RAW_BLOB_RETENTION_DAYS")
 
+    # ── heyi-eval 实测结果（radar×heyi-eval 合并：结果回流侧）──────────
+    # heyi-eval 把 project/skill lane 的 run 落在
+    # ``{heyi_eval_data}/{project,skill}_lane/runs/<run_id>/state.json``。
+    # radar 同机只读这些文件，渲染「实测结果」页。
+    heyi_eval_data: str = Field(
+        default="/home/ai/heyi-eval-data", alias="HEYI_EVAL_DATA"
+    )
+
     # ── 安全 ──────────────────────────────────────
     credential_encryption_key: str = Field(default="", alias="CREDENTIAL_ENCRYPTION_KEY")
 
