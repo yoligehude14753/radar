@@ -19,6 +19,7 @@ for d in [DATA_DIR, OUTPUTS_DIR, LOGS_DIR]:
 
 
 class LLMProfile(str, Enum):
+    zhipu = "zhipu"
     heyi = "heyi"
     yunwu = "yunwu"
     ollama = "ollama"
@@ -39,11 +40,21 @@ class Settings(BaseSettings):
     )
 
     # ── LLM ───────────────────────────────────────
+    # Default provider: yunwu MiniMax-M2.7 (the one brain shared with
+    # heyi-eval, with a working key). The ``zhipu`` GLM-5.1 profile is
+    # ready and one ``LLM_PROFILE=zhipu`` away once a valid Zhipu key
+    # exists.
     llm_profile: LLMProfile = Field(default=LLMProfile.yunwu, alias="LLM_PROFILE")
+
+    zhipu_api_key: str = Field(default="", alias="ZHIPU_API_KEY")
+    zhipu_base_url: str = Field(
+        default="https://open.bigmodel.cn/api/paas/v4", alias="ZHIPU_BASE_URL"
+    )
+    zhipu_model: str = Field(default="glm-5.1", alias="ZHIPU_MODEL")
 
     yunwu_api_key: str = Field(default="", alias="YUNWU_API_KEY")
     yunwu_base_url: str = Field(default="https://yunwu.ai/v1", alias="YUNWU_BASE_URL")
-    yunwu_model: str = Field(default="gpt-5.4-mini", alias="YUNWU_MODEL")
+    yunwu_model: str = Field(default="MiniMax-M2.7", alias="YUNWU_MODEL")
 
     heyi_api_key: str = Field(default="sk-heyi-local", alias="HEYI_API_KEY")
     heyi_base_url: str = Field(default="http://heyi.local:8000/v1", alias="HEYI_BASE_URL")
@@ -86,6 +97,14 @@ class Settings(BaseSettings):
     max_items_per_run: int = Field(default=500, alias="MAX_ITEMS_PER_RUN")
     raw_blob_retention_days: int = Field(default=0, alias="RAW_BLOB_RETENTION_DAYS")
 
+    # ── heyi-eval 实测结果（radar×heyi-eval 合并：结果回流侧）──────────
+    # heyi-eval 把 project/skill lane 的 run 落在
+    # ``{heyi_eval_data}/{project,skill}_lane/runs/<run_id>/state.json``。
+    # radar 同机只读这些文件，渲染「实测结果」页。
+    heyi_eval_data: str = Field(
+        default="/home/ai/heyi-eval-data", alias="HEYI_EVAL_DATA"
+    )
+
     # ── 安全 ──────────────────────────────────────
     credential_encryption_key: str = Field(default="", alias="CREDENTIAL_ENCRYPTION_KEY")
 
@@ -96,6 +115,7 @@ class Settings(BaseSettings):
     @property
     def llm_api_key(self) -> str:
         mapping = {
+            LLMProfile.zhipu: self.zhipu_api_key,
             LLMProfile.heyi: self.heyi_api_key,
             LLMProfile.yunwu: self.yunwu_api_key,
             LLMProfile.ollama: self.ollama_api_key,
@@ -106,6 +126,7 @@ class Settings(BaseSettings):
     @property
     def llm_base_url(self) -> str:
         mapping = {
+            LLMProfile.zhipu: self.zhipu_base_url,
             LLMProfile.heyi: self.heyi_base_url,
             LLMProfile.yunwu: self.yunwu_base_url,
             LLMProfile.ollama: self.ollama_base_url,
@@ -116,6 +137,7 @@ class Settings(BaseSettings):
     @property
     def llm_model(self) -> str:
         mapping = {
+            LLMProfile.zhipu: self.zhipu_model,
             LLMProfile.heyi: self.heyi_model,
             LLMProfile.yunwu: self.yunwu_model,
             LLMProfile.ollama: self.ollama_model,

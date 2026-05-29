@@ -212,3 +212,58 @@ export const saveRedditToken = (creds: {
     method: 'POST',
     body: JSON.stringify(creds),
   })
+
+// ── 实测结果（heyi-eval 回流）────────────────────────────────────────────────
+
+export interface EvalResult {
+  run_id: string
+  lane: string
+  full_id: string
+  target: string
+  status: string
+  outcome: string | null
+  deploys: boolean | null
+  quickstart_works: boolean | null
+  demos_passed: number | null
+  enqueued_at: string | null
+  started_at: string | null
+  ended_at: string | null
+  failure_reason_zh: string | null
+  qag_score: number | null
+  artifacts: string[]
+}
+
+export interface EvalReport {
+  outcome?: string
+  steps?: Array<{ name: string; status: string; note?: string; duration_s?: number }>
+  verdict?: {
+    deploys?: boolean
+    quickstart_works?: boolean
+    core_features_demonstrated?: string[]
+    blockers?: string[]
+  }
+  self_assessment_zh?: string
+  follow_ups?: string[]
+  [k: string]: unknown
+}
+
+export interface EvalDetail {
+  summary: EvalResult
+  report: EvalReport | null
+  agent_log_tail: string | null
+}
+
+export const getEvalResults = (params?: { lane?: string; outcome?: string; limit?: number }) => {
+  const q = new URLSearchParams()
+  if (params?.lane) q.set('lane', params.lane)
+  if (params?.outcome) q.set('outcome', params.outcome)
+  if (params?.limit) q.set('limit', String(params.limit))
+  const qs = q.toString()
+  return request<EvalResult[]>(`/eval/results${qs ? `?${qs}` : ''}`)
+}
+
+export const getEvalDetail = (runId: string) =>
+  request<EvalDetail>(`/eval/results/${runId}`)
+
+export const evalArtifactUrl = (lane: string, runId: string, rel: string) =>
+  `${BASE}/api/eval/artifact/${lane}/${runId}/${rel}`

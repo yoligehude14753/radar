@@ -9,6 +9,7 @@ import {
   KeyOutlined,
   AlertOutlined,
   SettingOutlined,
+  ExperimentOutlined,
 } from '@ant-design/icons'
 import { useQuery } from '@tanstack/react-query'
 import { useState, type FC, Component, type ReactNode } from 'react'
@@ -17,6 +18,7 @@ import { getIncidents } from './api/client'
 import Dashboard from './pages/Dashboard'
 import ReportsProjects from './pages/ReportsProjects'
 import ReportsCommunities from './pages/ReportsCommunities'
+import EvalResults from './pages/EvalResults'
 import Sources from './pages/Sources'
 import Tokens from './pages/Tokens'
 import Incidents from './pages/Incidents'
@@ -97,6 +99,7 @@ const AppLayout: FC = () => {
     { key: '/', icon: <HomeOutlined />, label: <NavLink to="/">仪表盘</NavLink> },
     { key: '/reports/projects', icon: <FileOutlined />, label: <NavLink to="/reports/projects">项目报告</NavLink> },
     { key: '/reports/communities', icon: <GlobalOutlined />, label: <NavLink to="/reports/communities">社群地图</NavLink> },
+    { key: '/eval', icon: <ExperimentOutlined />, label: <NavLink to="/eval">实测结果</NavLink> },
     { key: '/sources', icon: <DatabaseOutlined />, label: <NavLink to="/sources">数据源</NavLink> },
     { key: '/tokens', icon: <KeyOutlined />, label: <NavLink to="/tokens">凭证管理</NavLink> },
     { key: '/settings', icon: <SettingOutlined />, label: <NavLink to="/settings">系统设置</NavLink> },
@@ -158,6 +161,7 @@ const AppLayout: FC = () => {
             <Route path="/" element={<Dashboard />} />
             <Route path="/reports/projects" element={<ReportsProjects />} />
             <Route path="/reports/communities" element={<ReportsCommunities />} />
+            <Route path="/eval" element={<EvalResults />} />
             <Route path="/sources" element={<Sources />} />
             <Route path="/tokens" element={<Tokens />} />
             <Route path="/settings" element={<Settings />} />

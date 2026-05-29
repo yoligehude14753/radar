@@ -1,0 +1,23 @@
+# Cloudflare Tunnel 配置 — 把 yoliyoli.uk 指向本机 radar:7090
+#
+# 复制到 /etc/cloudflared/config.yml 并替换 <TUNNEL_ID>。
+# 前置：
+#   1. yoliyoli.uk 的 DNS 托管在 Cloudflare。
+#   2. cloudflared 已登录并创建隧道（见 deploy/DEPLOY.md）。
+#
+# 隧道无需公网 IP / 端口转发：cloudflared 主动外连 Cloudflare 边缘，
+# 由边缘把 yoliyoli.uk 的流量回源到本机 127.0.0.1:7090。TLS 由
+# Cloudflare 自动签发。
+
+tunnel: <TUNNEL_ID>
+credentials-file: /etc/cloudflared/<TUNNEL_ID>.json
+
+# 可选：仅放行只读页面到公网，写/触发类接口交给 Cloudflare Access
+# 做单点登录保护（见 DEPLOY.md「鉴权」一节）。
+ingress:
+  - hostname: yoliyoli.uk
+    service: http://127.0.0.1:7090
+  - hostname: www.yoliyoli.uk
+    service: http://127.0.0.1:7090
+  # 兜底：未匹配的主机名返回 404
+  - service: http_status:404

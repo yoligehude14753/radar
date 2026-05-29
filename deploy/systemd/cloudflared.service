@@ -1,0 +1,24 @@
+# cloudflared — Cloudflare Tunnel daemon，把 yoliyoli.uk 回源到 radar:7090
+#
+# 安装：
+#   sudo cp deploy/systemd/cloudflared.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now cloudflared
+#
+# 依赖 /etc/cloudflared/config.yml（见 deploy/cloudflared/config.yml.example）。
+[Unit]
+Description=cloudflared tunnel (yoliyoli.uk -> radar:7090)
+After=network-online.target radar.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# cloudflared 官方包默认装在 /usr/bin/cloudflared
+ExecStart=/usr/bin/cloudflared --config /etc/cloudflared/config.yml tunnel run
+Restart=on-failure
+RestartSec=5
+# 隧道客户端极轻量
+MemoryMax=256M
+
+[Install]
+WantedBy=multi-user.target
