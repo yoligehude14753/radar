@@ -1,0 +1,32 @@
+# radar — AI 趋势雷达 + heyi-eval 实测结果统一站
+#
+# 安装（在 heyi 机器上，以运行用户 ai 为例）：
+#   sudo cp deploy/systemd/radar.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now radar
+#
+# 端口 7090（仅监听本机；公网经 cloudflared 隧道暴露到 yoliyoli.uk）。
+[Unit]
+Description=radar (AI trend radar + heyi-eval results site)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ai
+WorkingDirectory=/home/ai/radar
+# 仅本机监听；公网由 cloudflared 转发。如需局域网直连改 WEB_HOST=0.0.0.0
+Environment=WEB_HOST=127.0.0.1
+Environment=WEB_PORT=7090
+# 机密走 EnvironmentFile（ZHIPU_API_KEY / DATABASE_URL / GITHUB_TOKEN ...）
+EnvironmentFile=-/etc/radar/env
+EnvironmentFile=-/home/ai/.yoli.env
+ExecStart=/home/ai/radar/.venv/bin/radar serve
+Restart=on-failure
+RestartSec=5
+# 资源护栏：radar 本体轻量，给足余量即可
+MemoryHigh=1G
+MemoryMax=2G
+
+[Install]
+WantedBy=multi-user.target
