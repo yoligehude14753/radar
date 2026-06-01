@@ -271,6 +271,25 @@ async def trigger_report_now(template: str) -> dict:
             from radar.outputs.communities import render_communities_report
             result = await render_communities_report(days_back=days_back)
         return {"ok": True, "message": f"报告已生成", **result}
+    except ImportError:
+        # Editable-install 边缘情况：outputs 子包路径未被 venv 收录。
+        # Fallback 用 asyncio subprocess 调 CLI render 命令。
+        import asyncio, sys
+        cmd = [sys.executable, "-m", "radar.cli", "render", template,
+               "--days-back", str(days_back)]
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+            if proc.returncode == 0:
+                return {"ok": True, "message": "报告已生成（CLI fallback）",
+                        "stdout": stdout.decode()[-500:]}
+            return {"ok": False, "message": f"CLI fallback 失败: {stderr.decode()[-300:]}"}
+        except Exception as exc2:
+            return {"ok": False, "message": f"CLI fallback 异常: {exc2}"}
     except Exception as exc:
         logger.exception("手动触发报告失败")
         return {"ok": False, "message": str(exc)}

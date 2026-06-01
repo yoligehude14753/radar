@@ -216,6 +216,36 @@ def reports_cmd(
     asyncio.run(_run())
 
 
+@app.command("render", help="立即生成一次报告（projects / communities / all）")
+def render_cmd(
+    template: str = typer.Argument("all", help="projects / communities / all"),
+    days_back: int = typer.Option(0, "--days-back", "-d", help="仅包含最近 N 天数据，0=全量"),
+) -> None:
+    """强制渲染一次 HTML 报告并保存到 outputs/。
+
+    常用场景：首次部署后手动触发，不等 cron 计划。
+    """
+    from radar.storage.database import init_db
+
+    async def _run() -> None:
+        await init_db()
+        templates = ["projects", "communities"] if template == "all" else [template]
+        for t in templates:
+            console.print(f"[cyan]正在渲染 {t} 报告…[/]")
+            try:
+                if t == "projects":
+                    from radar.outputs.projects import render_projects_report
+                    result = await render_projects_report(days_back=days_back)
+                else:
+                    from radar.outputs.communities import render_communities_report
+                    result = await render_communities_report(days_back=days_back)
+                console.print(f"[green]✓ {t} 报告渲染完成[/]", result)
+            except Exception as exc:
+                console.print(f"[red]✗ {t} 报告渲染失败：{exc}[/]")
+
+    asyncio.run(_run())
+
+
 # ── Token 管理 ────────────────────────────────────────────────────────────
 
 
