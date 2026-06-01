@@ -123,38 +123,248 @@ radar/
 
 ## 数据模型
 
-### 核心表（SQLAlchemy，PostgreSQL / SQLite 双支持）
+技术栈：SQLAlchemy 2.x async ORM，PostgreSQL（生产）/ SQLite（默认，零依赖）双支持。共 8 张表。
 
-| 表 | 职责 |
+```
+source_runs ──< items >── scores
+                  │
+                  ├──< tags
+                  └──< raw_blobs
+
+reports（独立）
+incidents >── incident_actions
+```
+
+---
+
+### `source_runs` — 每次抓取任务记录
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `id` | varchar(36) PK | UUID |
+| `source` | varchar(64) NOT NULL | `"github"` / `"reddit"` |
+| `cursor` | text | 增量游标（时间戳/ID），下次从此继续 |
+| `status` | varchar(20) | `pending` / `running` / `done` / `failed` |
+| `items_in` | int | 本次抓到的原始条目数（含重复） |
+| `items_new` | int | 去重后实际入库的新增数 |
+| `error` | text | 错误信息（`failed` 时填写） |
+| `started_at` | timestamptz | 任务开始时间 |
+| `finished_at` | timestamptz | 任务结束时间 |
+| `created_at` | timestamptz | 记录创建时间 |
+
+索引：`(source, created_at)`
+
+---
+
+### `items` — 统一内容条目
+
+跨 GitHub / Reddit 所有源归一化，`url_hash` 全局唯一去重。
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `id` | varchar(36) PK | UUID |
+| `source` | varchar(64) NOT NULL | `"github"` / `"reddit"` |
+| `external_id` | varchar(256) NOT NULL | GitHub: `"owner/repo"`；Reddit: `post_id` |
+| `url` | text NOT NULL | 条目链接 |
+| `url_hash` | varchar(64) UNIQUE | SHA-256(url)，跨 run 去重用 |
+| `title` | text | 仓库名 / 帖子标题 |
+| `content` | text | repo description / 帖子正文（截断 ~1000 字） |
+| `platform_data` | JSON | 平台专属字段（见下方展开） |
+| `source_run_id` | varchar(36) FK→source_runs | 关联抓取任务（SET NULL on delete） |
+| `item_at` | timestamptz | 内容发布时间（repo push_at / 帖子发布时间） |
+| `fetched_at` | timestamptz | 入库时间 |
+| `created_at` | timestamptz | 记录创建时间 |
+
+唯一约束：`(source, external_id)`
+索引：`url_hash`（unique）、`(source, fetched_at)`、`item_at`
+
+**`platform_data` GitHub 字段**
+
+```json
+{
+  "stars": 1052,
+  "forks": 104,
+  "language": "Python",
+  "topics": ["fastapi", "ai-security"],
+  "open_issues": 0,
+  "license": "MIT",
+  "owner_login": "beenuar",
+  "owner_type": "User",
+  "is_fork": false,
+  "is_archived": false,
+  "pushed_at": "2026-05-29T06:56:52Z",
+  "updated_at": "2026-05-29T06:56:35Z",
+  "watchers": 1052
+}
+```
+
+**`platform_data` Reddit 字段**
+
+```json
+{
+  "subreddit": "LocalLLaMA",
+  "post_id": "t3_abc123",
+  "author": "u/someone",
+  "ups": 342,
+  "upvote_ratio": 0.94,
+  "num_comments": 87,
+  "score": 342,
+  "total_awards": 2,
+  "is_self": true,
+  "flair": "Discussion",
+  "domain": "self.LocalLLaMA"
+}
+```
+
+---
+
+### `raw_blobs` — 原始 API Payload 留档
+
+保留完整原始响应，供重跑评分时无需重新抓取。
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `id` | varchar(36) PK | UUID |
+| `item_id` | varchar(36) UNIQUE FK→items | 一对一关联 |
+| `payload` | text | JSON 序列化的原始 API 响应 |
+| `content_type` | varchar(64) | 默认 `"application/json"` |
+| `stored_at` | timestamptz | 存入时间 |
+
+---
+
+### `scores` — LLM 评分记录
+
+同一 Item 支持多次历史评分（不同版本 LLM / 不同 evaluator），以 `scored_at` 最新为准。
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `id` | varchar(36) PK | UUID |
+| `item_id` | varchar(36) FK→items | 关联条目（CASCADE delete） |
+| `evaluator` | varchar(64) | `"qag"`（主评分）/ `"domain_classifier"` |
+| `score` | float | 综合分 0-1（公式见下） |
+| `dimensions` | JSON | 各维度细节（见下方展开） |
+| `llm_profile` | varchar(32) | 打分时使用的 LLM：`"yunwu"` / `"zhipu"` / `"ollama"` |
+| `scored_at` | timestamptz | 评分时间 |
+| `created_at` | timestamptz | 记录创建时间 |
+
+索引：`(item_id, evaluator)`、`scored_at`
+
+**综合分公式**
+
+```
+score = pain × 0.35 + market × 0.30 + feasibility × 0.20 + velocity × 0.15
+```
+
+**`dimensions` 结构（evaluator=qag）**
+
+```json
+{
+  "pain": 0.78,
+  "market": 0.72,
+  "feasibility": 0.82,
+  "velocity": 0.68,
+  "reason": "SOC告警疲劳是真实痛点，安全市场百亿级，开源+MIT许可降低落地门槛"
+}
+```
+
+---
+
+### `tags` — 命名空间标签
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `id` | varchar(36) PK | UUID |
+| `item_id` | varchar(36) FK→items | 关联条目（CASCADE delete） |
+| `namespace` | varchar(64) | `"domain"` / `"category"` / `"keyword"` |
+| `value` | varchar(256) | 如 `"coding"` / `"infra"` / `"rag"` 等 |
+| `created_at` | timestamptz | 记录创建时间 |
+
+唯一约束：`(item_id, namespace, value)`
+索引：`(namespace, value)`
+
+**当前使用的 namespace**
+
+| namespace | 说明 | 典型 value |
+|---|---|---|
+| `domain` | 12 领域分类（由 LLM 打分时写入） | `coding` / `infra` / `rag` / `browser` / ... |
+
+---
+
+### `reports` — 报告渲染记录
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `id` | varchar(36) PK | UUID |
+| `template` | varchar(32) | `"projects"` / `"communities"` |
+| `period_key` | varchar(16) | 数据窗口标识，如 `"2026-06-01"` |
+| `params` | JSON | 渲染参数快照（domains 数量 / days_back / 文件大小等） |
+| `file_path` | text | 磁盘绝对路径（`outputs/projects_20260601_0600.html`） |
+| `item_count` | int | 本次报告包含的条目数 |
+| `status` | varchar(16) | `"pending"` / `"ok"` / `"failed"` |
+| `error` | text | 渲染失败时的错误信息 |
+| `llm_profile` | varchar(32) | 渲染时使用的 LLM Profile |
+| `generated_at` | timestamptz | 生成时间 |
+| `expires_at` | timestamptz | 过期时间（超过保留天数后可清理） |
+| `created_at` | timestamptz | 记录创建时间 |
+
+唯一约束：`(template, period_key)`
+索引：`(template, generated_at)`
+
+---
+
+### `incidents` — 监控告警事件
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `id` | varchar(36) PK | UUID |
+| `signal_type` | varchar(64) | 12 类信号（见下方） |
+| `severity` | varchar(16) | `"info"` / `"warning"` / `"critical"` |
+| `affected_resource` | varchar(256) | `"github"` / `"reddit"` / `"token:github"` 等 |
+| `title` | text NOT NULL | 展示标题 |
+| `detail` | text | 详细说明 |
+| `context_data` | JSON | 发现时的现场数据快照 |
+| `status` | varchar(16) | `"open"` / `"resolving"` / `"resolved"` / `"dismissed"` |
+| `resolution` | varchar(128) | 使用了哪个 `action_key` 解决 |
+| `resolution_note` | text | 解决备注 |
+| `notified_at` | timestamptz | 最近一次发送通知的时间 |
+| `detected_at` | timestamptz | 告警触发时间 |
+| `resolved_at` | timestamptz | 解决时间 |
+| `created_at` | timestamptz | 记录创建时间 |
+
+索引：`(signal_type, affected_resource, status)`、`detected_at`
+
+**12 类 signal_type**
+
+| signal_type | 含义 |
 |---|---|
-| `items` | 统一内容条目（GitHub repo / Reddit post），跨源归一 |
-| `scores` | QAG 评分记录（支持多版本历史） |
-| `tags` | 命名空间标签：`domain=coding`、`domain=infra` 等 |
-| `source_runs` | 每次抓取的元数据与游标（增量控制） |
-| `raw_blobs` | 原始 API payload 全量留档（供重跑） |
-| `reports` | 已生成报告的元数据与文件路径 |
-| `incidents` | 告警事件（信号类型 / 严重级 / 处置状态） |
+| `data_stale` | 数据源超过阈值时间未更新（默认 2h） |
+| `source_failing` | 数据源连续多次抓取失败 |
+| `reddit_auth_fail` | Reddit 返回 403（需配置 OAuth） |
+| `github_rate_limit` | GitHub API 触发速率限制 |
+| `token_expiring` | Token 在 48h 内到期 |
+| `token_expired` | Token 已过期 |
+| `disk_low` | 磁盘剩余空间低于阈值（默认 5GB） |
+| `llm_unavailable` | LLM 服务不可达 |
+| `report_failed` | 报告渲染任务失败 |
+| `score_queue_stuck` | 待评分条目积压超过阈值 |
+| `db_slow` | 数据库响应时间过长 |
+| `custom` | 自定义告警（预留） |
 
-### `Item` 关键字段
+---
 
-```python
-source: str           # "github" | "reddit"
-external_id: str      # GitHub: "owner/repo", Reddit: post_id
-url: str
-title: str
-content: str          # repo description / post body（截断到 1000 字）
-platform_data: JSON   # GitHub: stars/forks/topics/... Reddit: ups/subreddit/...
-fetched_at: datetime
-```
+### `incident_actions` — 告警修复动作
 
-### `Score` 关键字段
-
-```python
-evaluator: str        # "qag" | "domain_classifier"
-score: float          # 综合分 0-1（pain×0.35 + market×0.30 + feasibility×0.20 + velocity×0.15）
-dimensions: JSON      # {"pain": 0.9, "market": 0.8, "feasibility": 0.7, "velocity": 0.85, "reason": "..."}
-llm_profile: str      # 打分时用的 LLM（"yunwu" / "zhipu" / "ollama"）
-```
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `id` | varchar(36) PK | UUID |
+| `incident_id` | varchar(36) FK→incidents | 关联告警（CASCADE delete） |
+| `action_key` | varchar(64) | `"retry_source"` / `"refresh_token"` / `"clear_cache"` 等 |
+| `label` | varchar(128) | 展示给用户的按钮文案 |
+| `endpoint` | varchar(256) | 前端调用的 API 路径（如 `/tokens`） |
+| `order` | int | 展示顺序（0 = 主推动作） |
+| `last_error` | text | 执行失败时记录错误 |
+| `executed_at` | timestamptz | 最近一次执行时间 |
+| `created_at` | timestamptz | 记录创建时间 |
 
 ---
 
