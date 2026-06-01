@@ -60,6 +60,7 @@ radar = "radar.cli:app"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+include = ["radar*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
