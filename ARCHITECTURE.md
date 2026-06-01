@@ -368,6 +368,262 @@ score = pain × 0.35 + market × 0.30 + feasibility × 0.20 + velocity × 0.15
 
 ---
 
+## heyi-eval 评测 Schema
+
+heyi-eval-v10 负责对三类对象进行自动评测。数据**落盘在 heyi 文件系统**（不是 radar 的 DB），radar 通过 `eval/reader.py` 只读扫描并回流到 UI。
+
+### 三条车道对比
+
+| 维度 | model_lane | project_lane | skill_lane |
+|---|---|---|---|
+| 评测对象 | HuggingFace 模型权重 | GitHub 开源项目 | SKILL.md 规范 |
+| 运行主体 | vLLM / transformers | m2b-claude-code agent | m2b-claude-code agent |
+| LLM 调用 | 本机 GPU（eval vLLM） | 云端 yunwu M2.7 | 云端 yunwu M2.7 |
+| run_id 格式 | `run-YYYYMMDD-<uuid>` | `proj-YYYYMMDD-<6hex>` | `skill-YYYYMMDD-<6hex>` |
+| 落盘路径 | `$HEYI_EVAL_DATA/runs/` | `$HEYI_EVAL_DATA/project_lane/runs/` | `$HEYI_EVAL_DATA/skill_lane/runs/` |
+| 索引 DB | `store/runs.sqlite` | `project_lane/runs.sqlite` | `skill_lane/runs.sqlite` |
+
+---
+
+### model_lane — 模型评测
+
+**阶段流水线（11 阶段，顺序执行）**
+
+```
+DISCOVER → CURATE → METADATA → ENGINE_SELECT → STAGE_MODEL
+         → DEPLOY → READY_WAIT → CAPABILITY → PERF_BENCH → SHOWCASE → CLEANUP
+```
+
+前 5 阶段（run-level）失败可从头重跑；后 6 阶段（stage-level）失败从 DEPLOY 续跑。
+
+**`Run`（state_machine.py）**
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `run_id` | str | UUID |
+| `hf_id` | str | HuggingFace 模型 ID，如 `Qwen/Qwen3-235B-A22B` |
+| `status` | RunStatus | `pending / in_progress / ok / failed / aborted` |
+| `created_at` | float | Unix 时间戳 |
+| `ended_at` | float | 结束时间戳 |
+| `stages` | dict[str, StageInfo] | 每个阶段的状态（见下） |
+| `failure_reason` | str | 最后一个失败阶段的错误信息 |
+
+**`StageInfo`**
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `name` | StageName | 阶段名（DISCOVER / CURATE / ... / CLEANUP） |
+| `status` | StageStatus | `pending / in_progress / ok / failed / skipped` |
+| `started_at` | float | 阶段开始时间戳 |
+| `ended_at` | float | 阶段结束时间戳 |
+| `duration_s` | float | 耗时秒数 |
+
+**run 目录产物**（`$HEYI_EVAL_DATA/runs/<run_id>/`）
+
+```
+state.json          ← Run 序列化（上方字段）
+_meta/
+  curated.json      ← CURATE 阶段：结构化 README（summary / modalities / license / ...）
+  metadata.json     ← METADATA 阶段：param_count / gpu_count / vram_gb
+  engine_select.json ← ENGINE_SELECT：tp 数 / 是否 oversize
+capability.json     ← CAPABILITY：13 类能力逐项分数（text/ASR/TTS/image/video/...）
+perf_bench.json     ← PERF_BENCH：TTFT / TPS / VRAM 实测
+showcase.json       ← SHOWCASE：cc-agent 对话示例 + 首印象评分
+```
+
+---
+
+### project_lane — 项目评测
+
+**`ProjectRun`（project_lane.py）**
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `run_id` | str | `proj-YYYYMMDD-<6hex>` |
+| `full_id` | str | GitHub owner/repo，如 `colbymchenry/codegraph` |
+| `source_url` | str | `https://github.com/owner/repo` |
+| `enqueued_at` | str | ISO8601 UTC |
+| `candidate` | dict | `ProjectCandidate` 快照（含 `qag_score` / `stars_total` / `reason`） |
+| `status` | ProjectStatus | 生命周期状态（见下） |
+| `started_at` | str | agent 开始时间 |
+| `ended_at` | str | 结束时间 |
+| `failure_reason_zh` | str | 中文失败原因（展示给用户） |
+| `preflight_json` | str | 产物文件名（`preflight.json`） |
+| `agent_log` | str | 产物文件名（`agent.log`） |
+| `report_json` | str | 产物文件名（`report.json`） |
+| `judge_json` | str | 产物文件名（`judge.json`，预留） |
+| `summary_outcome` | str | 摘要结论（`pass / partial / fail / timeout / ...`） |
+| `summary_deploys` | bool | agent 是否成功部署/运行 |
+| `summary_quickstart` | bool | 快速入门是否通过 |
+
+**`ProjectStatus` 枚举**
+
+| 值 | 含义 |
+|---|---|
+| `pending` | 等待执行 |
+| `preflight` | 正在 preflight（调 GitHub API 检查仓库） |
+| `agent_run` | agent 正在实测 |
+| `done` | 已完成（terminal） |
+| `preflight_error` | GitHub API 调用失败（可重试） |
+| `not_found` | 仓库不存在或私有（terminal） |
+| `oversize` | 仓库体积超过 500MB（terminal） |
+| `no_readme` | 无 README（terminal） |
+| `needs_gpu` | 需要 GPU 但不在 project 范围（terminal） |
+| `timeout` | agent 超过 900s 墙钟（terminal） |
+| `budget_exceeded` | agent 超过 token 预算（terminal） |
+| `sandbox_dead` | 容器崩溃（terminal） |
+| `report_parse_error` | agent 报告解析失败（terminal） |
+
+**SQLite 索引表**（`project_lane/runs.sqlite`）
+
+| 列 | 说明 |
+|---|---|
+| `run_id` TEXT PK | 主键 |
+| `full_id` TEXT | 仓库 ID（加速按 full_id 查询） |
+| `status` TEXT | 当前状态 |
+| `enqueued_at` TEXT | 入队时间（排序用） |
+| `ended_at` TEXT | 结束时间 |
+| `summary_outcome` TEXT | 摘要结论 |
+| `state_path` TEXT | state.json 绝对路径 |
+
+**run 目录产物**（`project_lane/runs/proj-YYYYMMDD-xxx/`）
+
+```
+state.json          ← ProjectRun 序列化
+preflight.json      ← GitHub API 仓库元数据（stars/size/topics/has_readme/...）
+agent.log           ← agent 完整 stdout
+report.json         ← RunReport（见下方通用报告结构）
+bad_report.txt      ← 解析失败时的原始 stdout（调试用）
+```
+
+---
+
+### skill_lane — Skill 评测
+
+**`SkillRun`（skill_lane.py）**
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `run_id` | str | `skill-YYYYMMDD-<6hex>` |
+| `full_id` | str | Skill 命名 ID，如 `claude-user/mermaid` |
+| `skill_path` | str | SKILL.md 的绝对文件路径 |
+| `enqueued_at` | str | ISO8601 UTC |
+| `candidate` | dict | `SkillCandidate` 快照（含 `name` / `source_root` / `version`） |
+| `status` | SkillStatus | 生命周期状态 |
+| `started_at` | str | agent 开始时间 |
+| `ended_at` | str | 结束时间 |
+| `failure_reason_zh` | str | 中文失败原因 |
+| `agent_log` | str | 产物文件名 |
+| `report_json` | str | 产物文件名 |
+| `bad_report_txt` | str | 产物文件名（解析失败时留存） |
+| `summary_outcome` | str | 摘要结论 |
+| `summary_demos` | int | agent 演练的 demo 场景数量 |
+
+**`SkillStatus` 枚举**（与 ProjectStatus 基本对称，少 oversize / no_readme / needs_gpu / preflight_error，多 `skill_clone_attempt`）
+
+**SQLite 索引表**（`skill_lane/runs.sqlite`）
+
+| 列 | 说明 |
+|---|---|
+| `run_id` TEXT PK | 主键 |
+| `full_id` TEXT | Skill 命名 ID |
+| `status` TEXT | 当前状态 |
+| `enqueued_at` TEXT | 入队时间 |
+| `ended_at` TEXT | 结束时间 |
+| `summary_outcome` TEXT | 摘要结论 |
+| `state_path` TEXT | state.json 绝对路径 |
+
+**run 目录产物**（`skill_lane/runs/skill-YYYYMMDD-xxx/`）
+
+```
+state.json          ← SkillRun 序列化
+agent.log           ← agent 完整 stdout
+report.json         ← RunReport（见下方通用报告结构）
+bad_report.txt      ← 解析失败时的原始 stdout
+```
+
+---
+
+### 通用 Agent 报告结构（RunReport）
+
+project_lane 和 skill_lane 的 agent 最终必须输出一段符合 `REPORT_JSON_SCHEMA` 的 JSON，落盘为 `report.json`。
+
+**`RunReport`**
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `schema_version` | `"1.0"` | 固定 |
+| `lane` | `"project"` \| `"skill"` | 所在车道 |
+| `target_id` | str | `full_id`（owner/repo 或 skill 命名） |
+| `outcome` | Outcome | 顶层结论（见下方枚举） |
+| `steps` | list[Step] | 执行步骤列表 |
+| `verdict` | Verdict | 结构化裁决 |
+| `self_assessment_zh` | str | Agent 中文自评（≤1024 字） |
+| `follow_ups` | list[str] | 改进建议（可选） |
+
+**`Outcome` 枚举**
+
+| 值 | 来源 | 含义 |
+|---|---|---|
+| `pass` | agent 自报 | 核心功能验证通过 |
+| `partial` | agent 自报 | 部分通过（有 blockers 但主流程可跑） |
+| `fail` | agent 自报 | 明确失败 |
+| `report_parse_error` | 系统判定 | agent 未输出合规报告 |
+| `timeout` | 系统判定 | 超过 900s 墙钟 |
+| `budget_exceeded` | 系统判定 | 超过 token 预算 |
+| `sandbox_dead` | 系统判定 | 容器在运行中崩溃 |
+| `oversize` | 系统判定 | preflight 拒绝（仓库 >500MB） |
+| `no_readme` | 系统判定 | preflight 拒绝（无 README） |
+| `needs_gpu` | 系统判定 | preflight 拒绝（需 GPU，project 范围不提供） |
+| `judge_unavailable` | 系统判定 | yunwu 429 风暴耗尽重试预算 |
+| `skill_clone_attempt` | 系统判定 | SKILL.md 尝试 git clone（INV-S1 违规） |
+
+**`Step`**
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `name` | str | 步骤名，如 `clone / install / smoke / demo_1` |
+| `status` | StepStatus | `ok / partial / fail / skip` |
+| `duration_s` | float | 耗时秒数（可选，缺省 0.0） |
+| `note` | str | 简短说明 |
+| `stdout_tail` | str | 步骤 stdout 尾部（≤2KB） |
+| `artifacts` | list[str] | 产物相对路径列表 |
+
+**`Verdict`**
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `deploys` | bool | 是否成功部署/启动 |
+| `quickstart_works` | bool | 快速入门路径是否通过 |
+| `core_features_demonstrated` | list[str] | 已验证的核心能力列表（PASS 要求 ≥1 条） |
+| `blockers` | list[str] | 阻塞项（未解决的问题） |
+
+**完整 `report.json` 示例**
+
+```json
+{
+  "schema_version": "1.0",
+  "lane": "project",
+  "target_id": "colbymchenry/codegraph",
+  "outcome": "pass",
+  "steps": [
+    {"name": "clone",   "status": "ok",      "duration_s": 4.2,  "note": "git clone --depth 1 ok"},
+    {"name": "install", "status": "ok",      "duration_s": 31.5, "note": "npm install ok"},
+    {"name": "smoke",   "status": "partial", "duration_s": 8.1,  "note": "CLI help ok, index demo skipped (Node 22.5+ required)"}
+  ],
+  "verdict": {
+    "deploys": true,
+    "quickstart_works": true,
+    "core_features_demonstrated": ["cli_help", "search_nodes"],
+    "blockers": ["index 初始化需要 Node.js 22.5+，当前 22.2"]
+  },
+  "self_assessment_zh": "项目 CLI 工具链完整，代码结构清晰，核心 API 设计合理；环境限制导致索引初始化 demo 无法演练，整体评为 partial。",
+  "follow_ups": ["在 Node.js 22.5+ 环境中重新评测", "评估 MCP server 功能"]
+}
+```
+
+---
+
 ## 核心功能详解
 
 ### 1. 数据发现（`sources/`）
