@@ -368,6 +368,166 @@ score = pain × 0.35 + market × 0.30 + feasibility × 0.20 + velocity × 0.15
 
 ---
 
+## heyi-eval 评测架构
+
+heyi-eval-v10 是与 radar 并列运行的评测引擎，部署在同一台 heyi 机器（上海 GPU 服务器）上。radar 负责发现和打分热点，heyi-eval 负责对热点做自动实测，结果回流到 radar 的「实测结果」页。
+
+### 信任域划分
+
+heyi-eval 的最核心设计原则是**多层隔离**，避免评测代码影响产线服务：
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│  heyi 机器                                                           │
+│                                                                      │
+│  PROD 信任域                  ORCH 信任域                            │
+│  ┌─────────────────────┐     ┌────────────────────────────────────┐  │
+│  │ 产线 vLLM (GPU 0-3) │     │ orchestrator / curator / discover  │  │
+│  │ minimax :10814       │◄───│ panel / backup / heyi_engine       │  │
+│  │ 评测代码只能 HTTP 访问 │     │ 持有 docker socket + 数据全权     │  │
+│  └─────────────────────┘     └────────────┬───────────────────────┘  │
+│                                            │ docker spawn            │
+│  EVAL 信任域                               ▼                         │
+│  ┌────────────────────────────────────┐  ┌────────────────────────┐  │
+│  │ e9-vllm-* / e9-sglang-* (GPU 5-7) │  │ m2b-claude-code        │  │
+│  │ 评测容器，名称强制 e9-* 前缀        │  │ project/skill agent 沙箱│  │
+│  │ 仅 DEPLOY 阶段创建，CLEANUP 销毁   │  │ uid=1100, 无 docker    │  │
+│  └────────────────────────────────────┘  └────────────────────────┘  │
+│                                                                      │
+│  DATA 信任域                                                         │
+│  /home/ai/heyi-eval-data/  ←  ORCH 全权                            │
+│  /home/ai/heyi-eval-backups/  ←  INV-9: 备份在数据根之外            │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+### 三条评测车道全景
+
+```
+                ┌─────────────────────────────────────────────┐
+数据源          │  HuggingFace Hub API   agents-radar manifest  本地 SKILL.md
+                └──────────┬──────────────────┬──────────────┬─┘
+                           │                  │              │
+                    discover/main.py   radar_ingest.py  skill_local_scan.py
+                           │                  │              │
+                           └──────────────────┴──────────────┘
+                                              │
+                                   project_candidates.jsonl
+                                   skill_candidates.jsonl
+                                   candidates.jsonl（model）
+                                              │
+                  ┌───────────────────────────┼───────────────────────────┐
+                  │                           │                           │
+            model_lane                 project_lane                skill_lane
+         11 阶段 vLLM 评测         agent 实测 GitHub 项目       agent 评测 SKILL.md
+                  │                           │                           │
+                  ▼                           ▼                           ▼
+          runs/<run_id>/           project_lane/runs/            skill_lane/runs/
+         capability.json           state.json                   state.json
+         perf_bench.json           report.json                  report.json
+         showcase.json             agent.log                    agent.log
+                  │                           │                           │
+                  └───────────────────────────┴───────────────────────────┘
+                                              │
+                                   radar eval/reader.py 只读扫描
+                                              │
+                                   GET /api/eval/results
+                                              │
+                                   radar.yoliyoli.uk 实测结果页
+```
+
+### model_lane — 11 阶段 HF 模型评测
+
+```
+DISCOVER → CURATE → METADATA → ENGINE_SELECT → STAGE_MODEL
+                                                     │
+              ┌──────────────────────────────────────┘
+              ▼
+         DEPLOY → READY_WAIT → CAPABILITY → PERF_BENCH → SHOWCASE → CLEANUP
+```
+
+**分层说明**
+
+- **run-level 阶段**（DISCOVER→STAGE_MODEL）：失败时从头整 run 重启，代价低（磁盘 IO 不涉及 GPU）
+- **stage-level 阶段**（DEPLOY→CLEANUP）：保留 DEPLOY 结果，从上一个 OK 阶段续跑，避免浪费 60-120s vLLM 启动时间
+
+**GPU 隔离**：产线 `minimax` 容器占 GPU 0-3，评测 `e9-*` 容器独占 GPU 5-7，INV-1 强制检查不重叠。
+
+### project_lane + skill_lane — Agent 评测架构
+
+project 和 skill 两条 lane 共用同一个 `agent_driver/` 执行层：
+
+```
+orchestrator project run / skill run
+           │
+           ▼
+    agent_driver/
+    ┌─────────────────────────────────────────────────────┐
+    │                                                     │
+    │  pool_manager          ccr_bridge                   │
+    │  ┌──────────────┐      ┌──────────────────────────┐ │
+    │  │ m2b-claude-code│     │ 生成 CCR config           │ │
+    │  │ 容器池（1个）  │     │ Provider: yunwu M2.7     │ │
+    │  │ uid=1100       │     │ Port: 3456 (容器内)       │ │
+    │  │ 无 docker sock │     │ transformer: openai shim │ │
+    │  └──────┬───────┘      └──────────────────────────┘ │
+    │         │                                           │
+    │  exec_runner                                        │
+    │  ┌──────┴──────────────────────────────────────────┐│
+    │  │ claude --print --permission-mode bypassPermissions││
+    │  │ /home/agent/workspace/<run_id>/TASK.md           ││
+    │  │                                                  ││
+    │  │ budget_guard: 50k tokens, 900s 墙钟              ││
+    │  │ watchdog thread: 每 15s 检查，超限 pkill claude  ││
+    │  └──────────────────────┬───────────────────────────┘│
+    │                         │ stream stdout               │
+    │  report_extractor       ▼                            │
+    │  ┌────────────────────────────────────────────────┐  │
+    │  │ 1. 找 <<<HEYI_RUN_REPORT_JSON>>>...<<<END>>> 围栏│  │
+    │  │ 2. 剥离 ```json 包装                           │  │
+    │  │ 3. 若无围栏，救援：扫描最后一个 report 形 JSON │  │
+    │  │ 4. jsonschema 校验 RunReport                   │  │
+    │  └────────────────────────────────────────────────┘  │
+    └─────────────────────────────────────────────────────┘
+                         │
+                         ▼
+                 report.json + agent.log + state.json
+```
+
+**CCR（Claude Code Router）作用**
+
+m2b-claude-code 容器内的 claude CLI 默认打向 `ANTHROPIC_BASE_URL=http://127.0.0.1:3456`（CCR 监听端口）。CCR 在容器内常驻，作为 Anthropic 协议 → OpenAI 协议的转换中间层：
+
+```
+claude CLI
+(Anthropic SDK)
+    │
+    ▼
+CCR :3456 (容器内)
+  ├── transformer: openai（剥 cache_control / reasoning，把 content blocks 转 string）
+  ├── transformer: maxtoken（cap 8192 tokens）
+  └── transformer: strip-thinking（去掉 <think> 块）
+    │
+    ▼ HTTP /chat/completions
+yunwu MiniMax-M2.7
+(云端，OpenAI 兼容)
+```
+
+**watchdog 机制**
+
+M2.7 在遭遇上游 429 风暴时，claude 的 stdout 可能长时间静默。为防止 run 永久挂死，`exec_runner` 启动一个守护线程，每 15 秒轮询 `budget_guard.check()`，超限时执行 `pkill -TERM -f 'claude --print'` 强制结束流，run 落地为 `EXCEEDED_WALL_CLOCK`。
+
+### 沙箱安全（INV-S1 / INV-P*）
+
+| 约束 | 机制 |
+|---|---|
+| skill agent 不能 clone 外部代码 | `detect_clone_attempt()` 扫描 agent.log，命中 `git clone / curl|bash` 则 outcome 强制 `skill_clone_attempt` |
+| project agent 资源上限 | project repo 大小 ≤ 500MB（preflight 检查），磁盘写只在 workspace 子目录，clone 用 `--depth 1` |
+| agent 与宿主隔离 | m2b-claude-code 容器 uid=1100，无 docker socket，无 root，workspace 目录 agent 专有 |
+| token 预算 | `budget_guard`：50k output tokens + 900s 墙钟双重护栏；watchdog 线程确保静默超时也能终止 |
+| 产物路径穿越防护 | `resolve_artifact()` 做 `relative_to(run_dir)` 验证，拒绝 `../` 跨目录访问 |
+
+---
+
 ## heyi-eval 评测 Schema
 
 heyi-eval-v10 负责对三类对象进行自动评测。数据**落盘在 heyi 文件系统**（不是 radar 的 DB），radar 通过 `eval/reader.py` 只读扫描并回流到 UI。
